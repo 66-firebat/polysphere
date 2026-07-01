@@ -1,0 +1,116 @@
+{
+  "totalApps": 20,
+  "whitelistedApps": [
+    "firefox.desktop",
+    "kitty.desktop",
+    "emacs.desktop",
+    "ghostty.desktop",
+    "code.desktop",
+    "spotify.desktop",
+    "thunar.desktop",
+    "discord.desktop",
+    "obsidian.desktop",
+    "brave-browser.desktop"
+  ],
+
+  "appearance": {
+    "overlayOpacity": 0.27,
+    "baseSphereRadius": 368,
+    "starCount": 50,
+    "starOpacityMin": 0.08,
+    "starOpacityMax": 0.12,
+
+    "searchBar": {
+      "width": 560,
+      "height": 56,
+      "borderRadius": 28,
+      "bottomMargin": 63,
+      "borderWidth": 1.5,
+      "backgroundOpacity": 0.92,
+      "shadowOpacity": 0.4,
+      "shadowBlur": 1.5
+    },
+
+    "appCard": {
+      "width": 74,
+      "height": 104,
+      "borderRadius": 12,
+      "iconSize": 55,
+      "fontSize": 11
+    }
+  },
+
+  "satellite": {
+    "hullWidth": 216,
+    "hullHeight": 148,
+    "panelWidth": 64,
+    "panelHeight": 51,
+    "strutWidth": 10,
+    "strutHeight": 4,
+    "antennaHeight": 16,
+    "thrusterHeight": 11,
+    "iconSize": 40,
+    "fontSize": 10
+  },
+
+  "sphere": {
+    "depthOpacityMultiplier": 4.0,
+    "baseScaleAtEdge": 0.78,
+    "scaleIncreaseTowardCenter": 0.22,
+    "maxTiltAngleX": 45,
+    "maxTiltAngleY": 35,
+    "hoverScaleMultiplier": 1.12,
+    "selectedZoom": 1.65,
+    "zoomFactorWeight": 0.45
+  },
+
+  "animations": {
+    "sphereRotateSpeed": 0.002,
+    "sphereAutoRotateIntervalMs": 16,
+    "sphereZoomDurationMs": 400,
+    "searchRotateDurationMs": 700,
+    "cardFadeDurationMs": 200,
+    "cardScaleDurationMs": 200,
+    "satelliteFadeDurationMs": 400,
+    "satelliteScaleDurationMs": 450,
+    "satelliteInitialScale": 0.4,
+    "satelliteTargetScale": 1.5,
+    "entranceFadeDurationMs": 800,
+    "exitFadeDurationMs": 400
+  },
+
+  "mouse": {
+    "dragSensitivity": 0.005,
+    "maxRotationAngle": 1.45
+  },
+
+  "keybindings": {
+    "toggle": "Alt+Tab",
+    "cancel": "Escape",
+    "cycleNext": "Tab",
+    "cyclePrevious": "Shift+Tab"
+  },
+
+  "colors": {
+    "base": "#1e1e2e",
+    "mantle": "#181825",
+    "crust": "#11111b",
+    "text": "#cdd6f4",
+    "subtext0": "#a6adc8",
+    "surface0": "#313244",
+    "surface1": "#45475a",
+    "surface2": "#585b70",
+    "overlay0": "#6c7086",
+    "blue": "#89b4fa",
+    "mauve": "#cba6f7",
+    "teal": "#94e2d5",
+    "peach": "#fab387",
+    "yellow": "#f9e2af",
+    "sapphire": "#74c7ec"
+  },
+
+  "mru": {
+    "maxEntries": 20,
+    "updateOnExit": true
+  }
+}

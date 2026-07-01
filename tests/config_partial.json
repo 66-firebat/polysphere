@@ -1,0 +1,10 @@
+{
+  "totalApps": 12,
+  "appearance": {
+    "baseSphereRadius": 400
+  },
+  "colors": {
+    "base": "#ff0000",
+    "text": "#00ff00"
+  }
+}

@@ -1,0 +1,95 @@
+{
+  "totalApps": 8,
+  "whitelistedApps": ["firefox.desktop", "kitty.desktop"],
+  "appearance": {
+    "overlayOpacity": 0.5,
+    "baseSphereRadius": 200,
+    "starCount": 10,
+    "starOpacityMin": 0.05,
+    "starOpacityMax": 0.15,
+    "searchBar": {
+      "width": 480,
+      "height": 48,
+      "borderRadius": 24,
+      "bottomMargin": 40,
+      "borderWidth": 2.0,
+      "backgroundOpacity": 0.85,
+      "shadowOpacity": 0.5,
+      "shadowBlur": 2.0
+    },
+    "appCard": {
+      "width": 60,
+      "height": 80,
+      "borderRadius": 8,
+      "iconSize": 40,
+      "fontSize": 9
+    }
+  },
+  "satellite": {
+    "hullWidth": 180,
+    "hullHeight": 120,
+    "panelWidth": 50,
+    "panelHeight": 40,
+    "strutWidth": 8,
+    "strutHeight": 3,
+    "antennaHeight": 12,
+    "thrusterHeight": 9,
+    "iconSize": 32,
+    "fontSize": 8
+  },
+  "sphere": {
+    "depthOpacityMultiplier": 3.0,
+    "baseScaleAtEdge": 0.7,
+    "scaleIncreaseTowardCenter": 0.3,
+    "maxTiltAngleX": 30,
+    "maxTiltAngleY": 25,
+    "hoverScaleMultiplier": 1.2,
+    "selectedZoom": 2.0,
+    "zoomFactorWeight": 0.5
+  },
+  "animations": {
+    "sphereRotateSpeed": 0.001,
+    "sphereAutoRotateIntervalMs": 20,
+    "sphereZoomDurationMs": 500,
+    "searchRotateDurationMs": 600,
+    "cardFadeDurationMs": 150,
+    "cardScaleDurationMs": 150,
+    "satelliteFadeDurationMs": 300,
+    "satelliteScaleDurationMs": 350,
+    "satelliteInitialScale": 0.3,
+    "satelliteTargetScale": 1.8,
+    "entranceFadeDurationMs": 1000,
+    "exitFadeDurationMs": 500
+  },
+  "mouse": {
+    "dragSensitivity": 0.003,
+    "maxRotationAngle": 1.2
+  },
+  "keybindings": {
+    "toggle": "Alt+Tab",
+    "cancel": "Escape",
+    "cycleNext": "Tab",
+    "cyclePrevious": "Shift+Tab"
+  },
+  "colors": {
+    "base": "#000000",
+    "mantle": "#111111",
+    "crust": "#050505",
+    "text": "#ffffff",
+    "subtext0": "#cccccc",
+    "surface0": "#222222",
+    "surface1": "#333333",
+    "surface2": "#444444",
+    "overlay0": "#555555",
+    "blue": "#00aaff",
+    "mauve": "#cc88ff",
+    "teal": "#00ffcc",
+    "peach": "#ffaa66",
+    "yellow": "#ffdd44",
+    "sapphire": "#66ddff"
+  },
+  "mru": {
+    "maxEntries": 10,
+    "updateOnExit": false
+  }
+}

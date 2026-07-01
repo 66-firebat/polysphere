@@ -1,12 +1,9 @@
 import QtQuick
-import Qt5Compat.GraphicalEffects
-import QtQuick.Window
 import QtQuick.Effects
 import QtQuick.Layouts
 import QtQuick.Controls
 import Quickshell
 import Quickshell.Io
-import "../"
 
 Item {
     id: window
@@ -14,6 +11,177 @@ Item {
 
     implicitWidth: Screen.width
     implicitHeight: Screen.height
+
+    // ═══════════════════════════════════════════════════════════════
+    // Config System
+    // ═══════════════════════════════════════════════════════════════
+
+    // Config path resolution: env var → default
+    readonly property string configPath: {
+        var envPath = Quickshell.env("POLYSPHERE_CONFIG");
+        if (envPath) return envPath;
+        var home = Quickshell.env("HOME");
+        return home + "/.config/polysphere/polysphere.json";
+    }
+
+    // Full default config — mirrors polysphere.json schema exactly
+    readonly property var defaultConfig: ({
+        "totalApps": 20,
+        "whitelistedApps": [
+            "firefox.desktop", "kitty.desktop", "emacs.desktop",
+            "ghostty.desktop", "code.desktop", "spotify.desktop",
+            "thunar.desktop", "discord.desktop", "obsidian.desktop",
+            "brave-browser.desktop"
+        ],
+        "appearance": {
+            "overlayOpacity": 0.27,
+            "baseSphereRadius": 368,
+            "starCount": 50,
+            "starOpacityMin": 0.08,
+            "starOpacityMax": 0.12,
+            "searchBar": {
+                "width": 560, "height": 56, "borderRadius": 28,
+                "bottomMargin": 63, "borderWidth": 1.5,
+                "backgroundOpacity": 0.92, "shadowOpacity": 0.4, "shadowBlur": 1.5
+            },
+            "appCard": {
+                "width": 74, "height": 104, "borderRadius": 12,
+                "iconSize": 55, "fontSize": 11
+            }
+        },
+        "satellite": {
+            "hullWidth": 216, "hullHeight": 148, "panelWidth": 64, "panelHeight": 51,
+            "strutWidth": 10, "strutHeight": 4, "antennaHeight": 16, "thrusterHeight": 11,
+            "iconSize": 40, "fontSize": 10
+        },
+        "sphere": {
+            "depthOpacityMultiplier": 4.0,
+            "baseScaleAtEdge": 0.78, "scaleIncreaseTowardCenter": 0.22,
+            "maxTiltAngleX": 45, "maxTiltAngleY": 35,
+            "hoverScaleMultiplier": 1.12,
+            "selectedZoom": 1.65, "zoomFactorWeight": 0.45
+        },
+        "animations": {
+            "sphereRotateSpeed": 0.002, "sphereAutoRotateIntervalMs": 16,
+            "sphereZoomDurationMs": 400, "searchRotateDurationMs": 700,
+            "cardFadeDurationMs": 200, "cardScaleDurationMs": 200,
+            "satelliteFadeDurationMs": 400, "satelliteScaleDurationMs": 450,
+            "satelliteInitialScale": 0.4, "satelliteTargetScale": 1.5,
+            "entranceFadeDurationMs": 800, "exitFadeDurationMs": 400
+        },
+        "mouse": {
+            "dragSensitivity": 0.005, "maxRotationAngle": 1.45
+        },
+        "keybindings": {
+            "toggle": "Alt+Tab", "cancel": "Escape",
+            "cycleNext": "Tab", "cyclePrevious": "Shift+Tab"
+        },
+        "colors": {
+            "base": "#1e1e2e", "mantle": "#181825", "crust": "#11111b",
+            "text": "#cdd6f4", "subtext0": "#a6adc8",
+            "surface0": "#313244", "surface1": "#45475a", "surface2": "#585b70",
+            "overlay0": "#6c7086",
+            "blue": "#89b4fa", "mauve": "#cba6f7", "teal": "#94e2d5",
+            "peach": "#fab387", "yellow": "#f9e2af", "sapphire": "#74c7ec"
+        },
+        "mru": {
+            "maxEntries": 20, "updateOnExit": true
+        }
+    })
+
+    // Resolved config — set after each successful config load
+    property var cfg: ({})
+
+    // Deep merge: overrides recursively replace matching leaves in defaults
+    function deepMerge(defaults, overrides) {
+        if (typeof defaults !== "object" || defaults === null) return overrides !== undefined ? overrides : defaults;
+        if (typeof overrides !== "object" || overrides === null) return overrides !== undefined ? overrides : defaults;
+        var result = {};
+        for (var key in defaults) {
+            if (defaults.hasOwnProperty(key)) result[key] = defaults[key];
+        }
+        for (var key in overrides) {
+            if (overrides.hasOwnProperty(key)) {
+                if (typeof defaults[key] === "object" && defaults[key] !== null && !Array.isArray(defaults[key])
+                    && typeof overrides[key] === "object" && overrides[key] !== null && !Array.isArray(overrides[key])) {
+                    result[key] = deepMerge(defaults[key], overrides[key]);
+                } else {
+                    result[key] = overrides[key];
+                }
+            }
+        }
+        return result;
+    }
+
+    // Write the resolved config to a debug dump file
+    function writeDebugDump(resolved) {
+        var json = JSON.stringify(resolved, null, 2);
+        var escaped = json.replace(/'/g, "'\\''");
+        Quickshell.execDetached(["bash", "-c",
+            "cat > /tmp/polysphere-config-debug.json << 'POLYEOF'\n" + json + "\nPOLYEOF"
+        ]);
+        console.log("POLYSPHERE: Debug dump written to /tmp/polysphere-config-debug.json");
+    }
+
+    // Config file reader
+    Process {
+        id: configReader
+        command: ["cat", configPath]
+        stdout: StdioCollector {
+            onStreamFinished: {
+                var raw = {};
+                var txt = this.text.trim();
+                if (txt.length > 0) {
+                    try {
+                        raw = JSON.parse(txt);
+                        console.log("POLYSPHERE: Config loaded from", configPath);
+                    } catch (e) {
+                        console.log("POLYSPHERE ERROR: Failed to parse config -", String(e));
+                        console.log("POLYSPHERE ERROR: Falling back to defaults");
+                    }
+                } else {
+                    console.log("POLYSPHERE WARNING: Config file empty at", configPath);
+                }
+                window.cfg = window.deepMerge(window.defaultConfig, raw);
+                window.writeDebugDump(window.cfg);
+            }
+        }
+    }
+
+    // Detect missing config file
+    Process {
+        id: configFallback
+        command: ["bash", "-c", "test -f " + configPath + " && echo 'EXISTS' || echo 'NOT_FOUND'"]
+        stdout: StdioCollector {
+            onStreamFinished: {
+                if (this.text.trim() === "NOT_FOUND") {
+                    console.log("POLYSPHERE WARNING: Config not found at", configPath);
+                    console.log("POLYSPHERE WARNING: Using defaults. Set $POLYSPHERE_CONFIG to override.");
+                    window.cfg = window.deepMerge(window.defaultConfig, {});
+                    window.writeDebugDump(window.cfg);
+                }
+            }
+        }
+    }
+
+    // Hot-reload: poll config file every 5 seconds
+    Timer {
+        id: configWatcher
+        interval: 5000
+        running: true
+        repeat: true
+        triggeredOnStart: true
+        onTriggered: {
+            configReader.running = false;
+            configReader.running = true;
+            configFallback.running = false;
+            configFallback.running = true;
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // Scaler & Paths
+    // ═══════════════════════════════════════════════════════════════
 
     Caching { id: paths }
 
@@ -27,23 +195,29 @@ Item {
         return res > 0 ? res : val;
     }
 
-    MatugenColors { id: _theme }
+    // ═══════════════════════════════════════════════════════════════
+    // Colors (from cfg)
+    // ═══════════════════════════════════════════════════════════════
 
-    readonly property color base:      _theme.base
-    readonly property color mantle:    _theme.mantle    || _theme.base
-    readonly property color crust:     _theme.crust
-    readonly property color surface0:  _theme.surface0
-    readonly property color surface1:  _theme.surface1
-    readonly property color surface2:  _theme.surface2
-    readonly property color text:      _theme.text
-    readonly property color subtext0:  _theme.subtext0
-    readonly property color blue:      _theme.blue      || "#89b4fa"
-    readonly property color mauve:     _theme.mauve     || "#cba6f7"
-    readonly property color teal:      _theme.teal      || "#94e2d5"
-    readonly property color overlay0:  _theme.overlay0  || "#6c7086"
-    readonly property color peach:     _theme.peach     || "#fab387"
-    readonly property color yellow:    _theme.yellow    || "#f9e2af"
-    readonly property color sapphire:  _theme.sapphire  || "#74c7ec"
+    readonly property color polyBase:     cfg.colors?.base     ?? "#1e1e2e"
+    readonly property color polyMantle:   cfg.colors?.mantle   ?? "#181825"
+    readonly property color polyCrust:    cfg.colors?.crust    ?? "#11111b"
+    readonly property color polyText:     cfg.colors?.text     ?? "#cdd6f4"
+    readonly property color polySubtext0: cfg.colors?.subtext0 ?? "#a6adc8"
+    readonly property color polySurface0: cfg.colors?.surface0 ?? "#313244"
+    readonly property color polySurface1: cfg.colors?.surface1 ?? "#45475a"
+    readonly property color polySurface2: cfg.colors?.surface2 ?? "#585b70"
+    readonly property color polyOverlay0: cfg.colors?.overlay0 ?? "#6c7086"
+    readonly property color polyBlue:     cfg.colors?.blue     ?? "#89b4fa"
+    readonly property color polyMauve:    cfg.colors?.mauve    ?? "#cba6f7"
+    readonly property color polyTeal:     cfg.colors?.teal     ?? "#94e2d5"
+    readonly property color polyPeach:    cfg.colors?.peach    ?? "#fab387"
+    readonly property color polyYellow:   cfg.colors?.yellow   ?? "#f9e2af"
+    readonly property color polySapphire: cfg.colors?.sapphire ?? "#74c7ec"
+
+    // ═══════════════════════════════════════════════════════════════
+    // Pre-scaled size helpers
+    // ═══════════════════════════════════════════════════════════════
 
     readonly property real _s2:   window.s(2)
     readonly property real _s3:   window.s(3)
@@ -65,39 +239,94 @@ Item {
     readonly property real _s74:  window.s(74)
     readonly property real _s104: window.s(104)
 
-    // Satellite-specific pre-scaled constants (all ~20% smaller than original)
-    readonly property real _sat_hullW:     window.s(216)   // was 270
-    readonly property real _sat_hullH:     window.s(148)   // was 185
-    readonly property real _sat_panelW:    window.s(64)    // was 80
-    readonly property real _sat_panelH:    window.s(51)    // was 64
-    readonly property real _sat_strutW:    window.s(10)    // was 12
-    readonly property real _sat_strutH:    window.s(4)     // was 5
-    readonly property real _sat_antennaH:  window.s(16)    // was 20
-    readonly property real _sat_thrusterH: window.s(11)    // was 14
-    readonly property real _sat_radius12:  window.s(10)    // was 12
-    readonly property real _sat_radius8:   window.s(7)     // was 8
-    readonly property real _sat_radius4:   window.s(3)     // was 4
-    readonly property real _sat_antBall:   window.s(6)     // was 8
-    readonly property real _sat_antStick:  window.s(2)     // was 3
-    readonly property real _sat_antOffX:   window.s(14)    // was 18
-    readonly property real _sat_screenM:   window.s(8)     // was 10
-    readonly property real _sat_innerM:    window.s(10)    // was 12
-    readonly property real _sat_iconSz:    window.s(40)    // was 50
-    readonly property real _sat_fontSize:  window.s(10)    // was 12
-    readonly property real _sat_thrBase:   window.s(16)    // was 20
-    readonly property real _sat_spacing:   window.s(5)     // was 6
+    // Satellite dimensions (from cfg)
+    readonly property real _sat_hullW:     window.s(cfg.satellite?.hullWidth     ?? 216)
+    readonly property real _sat_hullH:     window.s(cfg.satellite?.hullHeight    ?? 148)
+    readonly property real _sat_panelW:    window.s(cfg.satellite?.panelWidth    ?? 64)
+    readonly property real _sat_panelH:    window.s(cfg.satellite?.panelHeight   ?? 51)
+    readonly property real _sat_strutW:    window.s(cfg.satellite?.strutWidth    ?? 10)
+    readonly property real _sat_strutH:    window.s(cfg.satellite?.strutHeight   ?? 4)
+    readonly property real _sat_antennaH:  window.s(cfg.satellite?.antennaHeight ?? 16)
+    readonly property real _sat_thrusterH: window.s(cfg.satellite?.thrusterHeight ?? 11)
+    readonly property real _sat_radius12:  window.s(10)  // derived from hull geometry
+    readonly property real _sat_radius8:   window.s(7)
+    readonly property real _sat_radius4:   window.s(3)
+    readonly property real _sat_antBall:   window.s(6)
+    readonly property real _sat_antStick:  window.s(2)
+    readonly property real _sat_antOffX:   window.s(14)
+    readonly property real _sat_screenM:   window.s(8)
+    readonly property real _sat_innerM:    window.s(10)
+    readonly property real _sat_iconSz:    window.s(cfg.satellite?.iconSize      ?? 40)
+    readonly property real _sat_fontSize:  window.s(cfg.satellite?.fontSize      ?? 10)
+    readonly property real _sat_thrBase:   window.s(16)
+    readonly property real _sat_spacing:   window.s(5)
 
-    property real baseSphereRadius: window.s(368)
+    // ═══════════════════════════════════════════════════════════════
+    // Animation durations (from cfg)
+    // ═══════════════════════════════════════════════════════════════
+
+    readonly property int animSphereZoom:       cfg.animations?.sphereZoomDurationMs        ?? 400
+    readonly property int animSearchRotate:     cfg.animations?.searchRotateDurationMs      ?? 700
+    readonly property int animCardFade:         cfg.animations?.cardFadeDurationMs          ?? 200
+    readonly property int animCardScale:        cfg.animations?.cardScaleDurationMs         ?? 200
+    readonly property int animSatFade:          cfg.animations?.satelliteFadeDurationMs     ?? 400
+    readonly property int animSatScale:         cfg.animations?.satelliteScaleDurationMs    ?? 450
+    readonly property int animEntranceFade:     cfg.animations?.entranceFadeDurationMs      ?? 800
+    readonly property int animExitFade:         cfg.animations?.exitFadeDurationMs          ?? 400
+
+    // ═══════════════════════════════════════════════════════════════
+    // Sphere state
+    // ═══════════════════════════════════════════════════════════════
+
+    readonly property real sphereRotateSpeed:     cfg.animations?.sphereRotateSpeed         ?? 0.002
+    readonly property int  sphereAutoRotInterval:  cfg.animations?.sphereAutoRotateIntervalMs ?? 16
+    readonly property real sphereBaseScale:        cfg.sphere?.baseScaleAtEdge              ?? 0.78
+    readonly property real sphereScaleIncrease:    cfg.sphere?.scaleIncreaseTowardCenter    ?? 0.22
+    readonly property real sphereHoverScale:       cfg.sphere?.hoverScaleMultiplier         ?? 1.12
+    readonly property real sphereSelectedZoom:     cfg.sphere?.selectedZoom                 ?? 1.65
+    readonly property real sphereZoomWeight:       cfg.sphere?.zoomFactorWeight             ?? 0.45
+    readonly property real sphereTiltX:            cfg.sphere?.maxTiltAngleX                ?? 45
+    readonly property real sphereTiltY:            cfg.sphere?.maxTiltAngleY                ?? 35
+    readonly property real depthOpacityMult:       cfg.sphere?.depthOpacityMultiplier       ?? 4.0
+
+    readonly property real mouseDragSens:   cfg.mouse?.dragSensitivity  ?? 0.005
+    readonly property real mouseMaxRot:     cfg.mouse?.maxRotationAngle ?? 1.45
+
+    readonly property int    starCount:      cfg.appearance?.starCount      ?? 50
+    readonly property real   starOpacityMin: cfg.appearance?.starOpacityMin ?? 0.08
+    readonly property real   starOpacityMax: cfg.appearance?.starOpacityMax ?? 0.12
+
+    readonly property real baseSphereRadius: window.s(cfg.appearance?.baseSphereRadius ?? 368)
+
+    // ═══════════════════════════════════════════════════════════════
+    // Search bar dimensions (from cfg)
+    // ═══════════════════════════════════════════════════════════════
+
+    readonly property real sbWidth:           window.s(cfg.appearance?.searchBar?.width          ?? 560)
+    readonly property real sbHeight:          window.s(cfg.appearance?.searchBar?.height         ?? 56)
+    readonly property real sbBorderRadius:    window.s(cfg.appearance?.searchBar?.borderRadius   ?? 28)
+    readonly property real sbBottomMargin:    window.s(cfg.appearance?.searchBar?.bottomMargin   ?? 63)
+    readonly property real sbBorderWidth:     window.s(cfg.appearance?.searchBar?.borderWidth    ?? 1.5)
+    readonly property real sbBgOpacity:       cfg.appearance?.searchBar?.backgroundOpacity       ?? 0.92
+    readonly property real sbShadowOpacity:   cfg.appearance?.searchBar?.shadowOpacity           ?? 0.4
+    readonly property real sbShadowBlur:      cfg.appearance?.searchBar?.shadowBlur              ?? 1.5
+
+    readonly property real acWidth:        window.s(cfg.appearance?.appCard?.width      ?? 74)
+    readonly property real acHeight:       window.s(cfg.appearance?.appCard?.height     ?? 104)
+    readonly property real acBorderRadius: window.s(cfg.appearance?.appCard?.borderRadius ?? 12)
+    readonly property real acIconSize:     window.s(cfg.appearance?.appCard?.iconSize   ?? 55)
+    readonly property real acFontSize:     cfg.appearance?.appCard?.fontSize            ?? 11
+
     property real sphereZoom: 1.0
-    Behavior on sphereZoom { NumberAnimation { duration: 400; easing.type: Easing.OutCubic } }
+    Behavior on sphereZoom { NumberAnimation { duration: animSphereZoom; easing.type: Easing.OutCubic } }
 
     property real sphereRadius: baseSphereRadius
 
     property real rotX: -0.2
     property real rotY: 0
 
-    NumberAnimation { id: searchRotXAnim; target: window; property: "rotX"; duration: 700; easing.type: Easing.OutCubic }
-    NumberAnimation { id: searchRotYAnim; target: window; property: "rotY"; duration: 700; easing.type: Easing.OutCubic }
+    NumberAnimation { id: searchRotXAnim; target: window; property: "rotX"; duration: animSearchRotate; easing.type: Easing.OutCubic }
+    NumberAnimation { id: searchRotYAnim; target: window; property: "rotY"; duration: animSearchRotate; easing.type: Easing.OutCubic }
 
     property var projCache: []
     property bool projDirty: true
@@ -121,11 +350,8 @@ Item {
             let b_x      = Math.cos(b_theta) * b_radius;
             let b_z      = Math.sin(b_theta) * b_radius;
 
-            // Rotate X
             let y1 = b_y * cosRx - b_z * sinRx;
             let z1 = b_y * sinRx + b_z * cosRx;
-
-            // Rotate Y
             let x2 = b_x * cosRy + z1 * sinRy;
             let z2 = -b_x * sinRy + z1 * cosRy;
 
@@ -134,11 +360,9 @@ Item {
         window.projCache = arr;
     }
 
-    // Invalidate cache whenever rotation changes
     onRotXChanged: { projDirty = true; rebuildProjCache(); }
     onRotYChanged: { projDirty = true; rebuildProjCache(); }
 
-    // Keep the original project3D for centerOnApp (called rarely)
     function project3D(bx, by, bz) {
         let rx = window.rotX;
         let ry = window.rotY;
@@ -150,10 +374,10 @@ Item {
     }
 
     Timer {
-        interval: 16
+        interval: window.sphereAutoRotInterval
         running: !sceneMouse.pressed && !searchRotXAnim.running && !searchRotYAnim.running
         repeat: true
-        onTriggered: window.rotY -= 0.002
+        onTriggered: window.rotY -= window.sphereRotateSpeed
     }
 
     function centerOnApp(index) {
@@ -178,7 +402,7 @@ Item {
         if (diff >  Math.PI) diff -= Math.PI * 2;
         if (diff < -Math.PI) diff += Math.PI * 2;
 
-        searchRotXAnim.to = Math.max(-1.45, Math.min(1.45, targetRotX));
+        searchRotXAnim.to = Math.max(-mouseMaxRot, Math.min(mouseMaxRot, targetRotX));
         searchRotYAnim.to = window.rotY + diff;
 
         searchRotXAnim.restart();
@@ -188,7 +412,7 @@ Item {
     property real introPhase: 0.0
     NumberAnimation on introPhase {
         id: introPhaseAnim
-        from: 0.0; to: 1.0; duration: 800; easing.type: Easing.OutExpo; running: true
+        from: 0.0; to: 1.0; duration: window.animEntranceFade; easing.type: Easing.OutExpo; running: true
     }
 
     Connections {
@@ -206,13 +430,13 @@ Item {
     }
 
     Shortcut {
-        sequence: "Escape"
+        sequence: cfg.keybindings?.cancel ?? "Escape"
         onActivated: closeSequence.start()
     }
 
     SequentialAnimation {
         id: closeSequence
-        NumberAnimation { target: window; property: "introPhase"; to: 0.0; duration: 400; easing.type: Easing.OutQuint }
+        NumberAnimation { target: window; property: "introPhase"; to: 0.0; duration: window.animExitFade; easing.type: Easing.OutQuint }
         ScriptAction { script: Quickshell.execDetached(["bash", paths.serpantinumDir + "/scripts/qs_manager.sh", "close"]) }
     }
 
@@ -233,8 +457,6 @@ Item {
                 try {
                     if (this.text && this.text.trim().length > 0) {
                         window.allApps = JSON.parse(this.text);
-                        // Batch-append in chunks to avoid a single long block on
-                        // the main thread that freezes the intro animation.
                         let apps  = window.allApps;
                         let chunk = 40;
                         let idx   = 0;
@@ -246,7 +468,7 @@ Item {
                         }
                         appendChunk();
                     }
-                } catch(e) { console.log(e); }
+                } catch(e) { console.log("POLYSPHERE: appFetcher error -", String(e)); }
             }
         }
     }
@@ -271,7 +493,7 @@ Item {
                 window.selectedAppIcon  = appModel.get(i).icon || "";
                 window.selectedAppExec  = appModel.get(i).exec || "";
                 centerOnApp(i);
-                window.sphereZoom = 1.65;
+                window.sphereZoom = sphereSelectedZoom;
                 found = true;
                 break;
             }
@@ -287,12 +509,17 @@ Item {
         Quickshell.execDetached(["bash", "-c", execStr]);
         closeSequence.start();
     }
+
+    // ═══════════════════════════════════════════════════════════════
+    // Stars background
+    // ═══════════════════════════════════════════════════════════════
+
     Item {
         anchors.fill: parent
         opacity: window.introPhase
 
         Repeater {
-            model: 50
+            model: window.starCount
             Rectangle {
                 property real seed: Math.random()
                 x: seed * window.width
@@ -300,11 +527,15 @@ Item {
                 width:  window._s2 + Math.random() * window._s2
                 height: width
                 radius: width / 2
-                color:  window.text
-                opacity: 0.08 + Math.random() * 0.12
+                color:  window.polyText
+                opacity: window.starOpacityMin + Math.random() * (window.starOpacityMax - window.starOpacityMin)
             }
         }
     }
+
+    // ═══════════════════════════════════════════════════════════════
+    // 3D Scene
+    // ═══════════════════════════════════════════════════════════════
 
     Item {
         id: scene3D
@@ -327,9 +558,9 @@ Item {
                 if (!pressed) return;
                 let dx = mouse.x - lastX;
                 let dy = mouse.y - lastY;
-                window.rotY += dx * 0.005;
-                let newRotX = window.rotX - dy * 0.005;
-                window.rotX = Math.max(-1.45, Math.min(1.45, newRotX));
+                window.rotY += dx * window.mouseDragSens;
+                let newRotX = window.rotX - dy * window.mouseDragSens;
+                window.rotX = Math.max(-window.mouseMaxRot, Math.min(window.mouseMaxRot, newRotX));
                 lastX = mouse.x;
                 lastY = mouse.y;
             }
@@ -349,16 +580,11 @@ Item {
                 delegate: Item {
                     id: appNode
 
-                    // Read pre-computed projection from the cache array.
-                    // The cache is a plain JS array; QML won't auto-bind to its
-                    // contents, so we use a property alias that updates whenever
-                    // projCache itself is reassigned (the whole array is replaced
-                    // on every cache rebuild, which triggers change notification).
                     property var proj: (window.projCache && window.projCache.length > index)
                                        ? window.projCache[index]
                                        : { x: 0, y: 0, z: 0 }
 
-                    property real zoomFactor: 1.0 + (window.sphereZoom - 1.0) * 0.45
+                    property real zoomFactor: 1.0 + (window.sphereZoom - 1.0) * window.sphereZoomWeight
 
                     x: (origin.width  / 2) + (proj.x * window.sphereRadius * zoomFactor) - width  / 2
                     y: (origin.height / 2) + (proj.y * window.sphereRadius * zoomFactor) - height / 2
@@ -368,49 +594,46 @@ Item {
                     property bool isMatch:    window.searchQuery === "" || model.name.toLowerCase().includes(window.searchQuery)
                     property bool isSelected: index === window.selectedAppIndex
 
-                    // Collapsed opacity expression — avoids redundant sub-property
-                    property real _hz: Math.max(0.0, Math.min(1.0, proj.z * 4.0))
+                    property real _hz: Math.max(0.0, Math.min(1.0, proj.z * window.depthOpacityMult))
                     opacity: proj.z > 0.0 ? (isMatch ? _hz : _hz * 0.15) : 0.0
-                    Behavior on opacity { NumberAnimation { duration: 200; easing.type: Easing.OutCubic } }
+                    Behavior on opacity { NumberAnimation { duration: window.animCardFade; easing.type: Easing.OutCubic } }
 
                     visible: opacity > 0.01
 
-                    property real _baseScale: 0.78 + (Math.max(0.0, proj.z) * 0.22)
-                    scale: isSelected ? 1.0 : (_baseScale * ((nodeMa.containsMouse && !isSelected) ? 1.12 : 1.0))
-                    Behavior on scale { NumberAnimation { duration: 200; easing.type: Easing.OutCubic } }
+                    property real _baseScale: window.sphereBaseScale + (Math.max(0.0, proj.z) * window.sphereScaleIncrease)
+                    scale: isSelected ? 1.0 : (_baseScale * ((nodeMa.containsMouse && !isSelected) ? window.sphereHoverScale : 1.0))
+                    Behavior on scale { NumberAnimation { duration: window.animCardScale; easing.type: Easing.OutCubic } }
 
-                    // Tilt angles — used only for the non-selected card face
                     property real _xNorm: proj.x / (window.sphereRadius / window.s(310.5))
                     property real _yNorm: proj.y / (window.sphereRadius / window.s(310.5))
 
                     transform: [
                         Rotation {
                             axis { x: 1; y: 0; z: 0 }
-                            angle: appNode.isSelected ? 0 : -appNode._yNorm * 45
+                            angle: appNode.isSelected ? 0 : -appNode._yNorm * window.sphereTiltX
                             origin.x: appNode.width  / 2
                             origin.y: appNode.height / 2
                         },
                         Rotation {
                             axis { x: 0; y: 1; z: 0 }
-                            angle: appNode.isSelected ? 0 : appNode._xNorm * 35
+                            angle: appNode.isSelected ? 0 : appNode._xNorm * window.sphereTiltY
                             origin.x: appNode.width  / 2
                             origin.y: appNode.height / 2
                         }
                     ]
 
-                    width:  window._s74
-                    height: window._s104
+                    width:  window.acWidth
+                    height: window.acHeight
 
                     // ── Normal app card (hidden while selected) ───────────────
                     Rectangle {
                         anchors.fill: parent
-                        radius: window._s12
+                        radius: window.acBorderRadius
                         color:  "transparent"
-                        border.color: nodeMa.containsMouse && !appNode.isSelected ? window.surface2 : "transparent"
+                        border.color: nodeMa.containsMouse && !appNode.isSelected ? window.polySurface2 : "transparent"
                         border.width: window._s2
-                        Behavior on color { ColorAnimation { duration: 200 } }
+                        Behavior on color { ColorAnimation { duration: window.animCardFade } }
 
-                        // Completely skip rendering when satellite is shown
                         visible: !appNode.isSelected
 
                         ColumnLayout {
@@ -420,16 +643,14 @@ Item {
 
                             Image {
                                 Layout.alignment: Qt.AlignHCenter
-                                Layout.preferredWidth:  window._s55
-                                Layout.preferredHeight: window._s55
+                                Layout.preferredWidth:  window.acIconSize
+                                Layout.preferredHeight: window.acIconSize
                                 source: model.icon
                                     ? (model.icon.startsWith("/") ? "file://" + model.icon : "image://icon/" + model.icon)
                                     : "image://icon/application-x-executable"
                                 fillMode: Image.PreserveAspectFit
                                 asynchronous: true
                                 smooth: true
-                                // Cache decoded images — avoids re-decode on every
-                                // Repeater recycle pass.
                                 cache: true
                             }
 
@@ -437,7 +658,7 @@ Item {
                                 Layout.fillWidth: true
                                 implicitHeight: labelText.implicitHeight + window._s4
                                 radius: window._s4
-                                color: Qt.rgba(window.crust.r, window.crust.g, window.crust.b, 0.60)
+                                color: Qt.rgba(window.polyCrust.r, window.polyCrust.g, window.polyCrust.b, 0.60)
 
                                 Text {
                                     id: labelText
@@ -446,9 +667,9 @@ Item {
                                     anchors.rightMargin: window._s3
                                     text: model.name
                                     font.family: "JetBrains Mono"
-                                    font.pixelSize: window._s11
+                                    font.pixelSize: window.acFontSize
                                     font.weight: Font.DemiBold
-                                    color: window.text
+                                    color: window.polyText
                                     horizontalAlignment: Text.AlignHCenter
                                     verticalAlignment:   Text.AlignVCenter
                                     elide: Text.ElideRight
@@ -457,19 +678,19 @@ Item {
                         }
                     }
 
+                    // ── Satellite detail view (when selected) ────────────────
                     Loader {
                         id: satLoader
                         anchors.centerIn: parent
                         active: appNode.isSelected
                         opacity: appNode.isSelected ? 1.0 : 0.0
-                        scale:   appNode.isSelected ? 1.5 : 0.4
+                        scale:   appNode.isSelected ? cfg.animations?.satelliteTargetScale ?? 1.5 : (cfg.animations?.satelliteInitialScale ?? 0.4)
 
-                        Behavior on opacity { NumberAnimation { duration: 400; easing.type: Easing.OutCubic } }
-                        Behavior on scale   { NumberAnimation { duration: 450; easing.type: Easing.OutBack  } }
+                        Behavior on opacity { NumberAnimation { duration: window.animSatFade; easing.type: Easing.OutCubic } }
+                        Behavior on scale   { NumberAnimation { duration: window.animSatScale; easing.type: Easing.OutBack  } }
 
                         sourceComponent: Component {
                             Item {
-                                // Satellite total dimensions (20 % smaller than original)
                                 readonly property real satW: window._sat_panelW + window._sat_strutW
                                                            + window._sat_hullW
                                                            + window._sat_strutW + window._sat_panelW
@@ -488,8 +709,8 @@ Item {
                                     height: window._sat_panelH
                                     anchors.right: lStrut.left
                                     anchors.verticalCenter: hull.verticalCenter
-                                    color: window.mantle
-                                    border.color: Qt.alpha(window.surface2, 0.4)
+                                    color: window.polyMantle
+                                    border.color: Qt.alpha(window.polySurface2, 0.4)
                                     border.width: 1
                                     radius: window._sat_radius4
 
@@ -503,7 +724,7 @@ Item {
                                             Rectangle {
                                                 width:  (lPanel.width  - window._sat_screenM - 3 * window._s2) / 4
                                                 height: (lPanel.height - window._sat_screenM - 3 * window._s2) / 4
-                                                color: Qt.alpha(window.blue, index % 3 === 0 ? 0.15 : 0.05)
+                                                color: Qt.alpha(window.polyBlue, index % 3 === 0 ? 0.15 : 0.05)
                                                 radius: 1
                                             }
                                         }
@@ -516,7 +737,7 @@ Item {
                                     height: window._sat_strutH
                                     anchors.right: hull.left
                                     anchors.verticalCenter: hull.verticalCenter
-                                    color: Qt.alpha(window.surface2, 0.5)
+                                    color: Qt.alpha(window.polySurface2, 0.5)
                                 }
 
                                 // Central hull
@@ -526,8 +747,8 @@ Item {
                                     height: window._sat_hullH
                                     anchors.centerIn: parent
                                     anchors.verticalCenterOffset: (window._sat_antennaH - window._sat_thrusterH) * 0.5
-                                    color: window.base
-                                    border.color: Qt.alpha(window.surface1, 0.6)
+                                    color: window.polyBase
+                                    border.color: Qt.alpha(window.polySurface1, 0.6)
                                     border.width: 1.5
                                     radius: window._sat_radius12
 
@@ -538,7 +759,7 @@ Item {
                                         anchors.horizontalCenter: parent.horizontalCenter
                                         anchors.horizontalCenterOffset: -window._sat_antOffX
                                         anchors.bottom: parent.top
-                                        color: Qt.alpha(window.surface2, 0.7)
+                                        color: Qt.alpha(window.polySurface2, 0.7)
                                         radius: 1
                                         Rectangle {
                                             width:  window._sat_antBall
@@ -546,7 +767,7 @@ Item {
                                             radius: width / 2
                                             anchors.horizontalCenter: parent.horizontalCenter
                                             anchors.bottom: parent.top
-                                            color: window.blue
+                                            color: window.polyBlue
                                         }
                                     }
 
@@ -555,9 +776,9 @@ Item {
                                         id: notifScreen
                                         anchors.fill: parent
                                         anchors.margins: window._sat_screenM
-                                        color: window.mantle
+                                        color: window.polyMantle
                                         radius: window._sat_radius8
-                                        border.color: Qt.alpha(window.surface0, 0.5)
+                                        border.color: Qt.alpha(window.polySurface0, 0.5)
                                         border.width: 1
 
                                         ColumnLayout {
@@ -586,7 +807,7 @@ Item {
                                                 font.family: "JetBrains Mono"
                                                 font.pixelSize: window._sat_fontSize
                                                 font.weight: Font.Bold
-                                                color: window.text
+                                                color: window.polyText
                                                 horizontalAlignment: Text.AlignHCenter
                                                 elide: Text.ElideRight
                                                 wrapMode: Text.WordWrap
@@ -600,7 +821,7 @@ Item {
                                         height: window._sat_thrusterH * 0.5
                                         anchors.horizontalCenter: parent.horizontalCenter
                                         anchors.top: parent.bottom
-                                        color: window.surface1
+                                        color: window.polySurface1
                                         radius: 2
                                         Rectangle {
                                             anchors.horizontalCenter: parent.horizontalCenter
@@ -608,7 +829,7 @@ Item {
                                             width:  parent.width * 0.6
                                             height: window._sat_thrusterH
                                             radius: width / 2
-                                            color: Qt.alpha(window.sapphire, 0.35)
+                                            color: Qt.alpha(window.polySapphire, 0.35)
                                         }
                                     }
                                 }
@@ -620,8 +841,8 @@ Item {
                                     height: window._sat_panelH
                                     anchors.left: rStrut.right
                                     anchors.verticalCenter: hull.verticalCenter
-                                    color: window.mantle
-                                    border.color: Qt.alpha(window.surface2, 0.4)
+                                    color: window.polyMantle
+                                    border.color: Qt.alpha(window.polySurface2, 0.4)
                                     border.width: 1
                                     radius: window._sat_radius4
 
@@ -635,7 +856,7 @@ Item {
                                             Rectangle {
                                                 width:  (rPanel.width  - window._sat_screenM - 3 * window._s2) / 4
                                                 height: (rPanel.height - window._sat_screenM - 3 * window._s2) / 4
-                                                color: Qt.alpha(window.blue, index % 3 === 0 ? 0.15 : 0.05)
+                                                color: Qt.alpha(window.polyBlue, index % 3 === 0 ? 0.15 : 0.05)
                                                 radius: 1
                                             }
                                         }
@@ -648,7 +869,7 @@ Item {
                                     height: window._sat_strutH
                                     anchors.left: hull.right
                                     anchors.verticalCenter: hull.verticalCenter
-                                    color: Qt.alpha(window.surface2, 0.5)
+                                    color: Qt.alpha(window.polySurface2, 0.5)
                                 }
                             }
                         }
@@ -666,31 +887,33 @@ Item {
         }
     }
 
+    // ═══════════════════════════════════════════════════════════════
+    // Search bar
+    // ═══════════════════════════════════════════════════════════════
+
     Rectangle {
         id: searchContainer
-        width:  window.s(560)
-        height: window._s56
+        width:  window.sbWidth
+        height: window.sbHeight
         anchors.bottom: parent.bottom
-        anchors.bottomMargin: window._s63
+        anchors.bottomMargin: window.sbBottomMargin
         anchors.horizontalCenter: parent.horizontalCenter
 
-        radius: window._s28
-        color: Qt.rgba(window.mantle.r, window.mantle.g, window.mantle.b, 0.92)
-        border.color: searchInput.activeFocus ? window.mauve : window.surface1
-        border.width: window.s(1.5)
+        radius: window.sbBorderRadius
+        color: Qt.rgba(window.polyMantle.r, window.polyMantle.g, window.polyMantle.b, window.sbBgOpacity)
+        border.color: searchInput.activeFocus ? window.polyMauve : window.polySurface1
+        border.width: window.sbBorderWidth
 
         opacity: window.introPhase
         transform: Translate { y: (1 - window.introPhase) * window._s40 }
-        Behavior on border.color { ColorAnimation { duration: 200 } }
+        Behavior on border.color { ColorAnimation { duration: window.animCardFade } }
 
-        // layer.enabled only when the shadow actually matters (saves an FBO
-        // on every frame when the bar is offscreen / fading in).
         layer.enabled: window.introPhase > 0.01
         layer.effect: MultiEffect {
             shadowEnabled: true
             shadowColor: "#000000"
-            shadowOpacity: 0.4
-            shadowBlur: 1.5
+            shadowOpacity: window.sbShadowOpacity
+            shadowBlur: window.sbShadowBlur
             shadowVerticalOffset: window._s4
         }
 
@@ -704,7 +927,7 @@ Item {
                 text: ""
                 font.family: "Iosevka Nerd Font"
                 font.pixelSize: window._s18
-                color: searchInput.activeFocus ? window.mauve : window.subtext0
+                color: searchInput.activeFocus ? window.polyMauve : window.polySubtext0
                 Behavior on color { ColorAnimation { duration: 150 } }
             }
 
@@ -713,14 +936,14 @@ Item {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 background: Item {}
-                color: window.text
+                color: window.polyText
                 font.family: "JetBrains Mono"
                 font.pixelSize: window._s15
                 font.weight: Font.Medium
                 selectByMouse: true
 
                 placeholderText: "Search applications..."
-                placeholderTextColor: window.overlay0
+                placeholderTextColor: window.polyOverlay0
                 verticalAlignment: TextInput.AlignVCenter
 
                 onTextChanged: window.handleSearch(text)
@@ -733,7 +956,7 @@ Item {
                             window.selectedAppIcon  = appModel.get(i).icon || "";
                             window.selectedAppExec  = appModel.get(i).exec || "";
                             window.centerOnApp(i);
-                            window.sphereZoom = 1.65;
+                            window.sphereZoom = sphereSelectedZoom;
                             break;
                         }
                     }
@@ -747,7 +970,7 @@ Item {
                             window.selectedAppIcon  = appModel.get(i).icon || "";
                             window.selectedAppExec  = appModel.get(i).exec || "";
                             window.centerOnApp(i);
-                            window.sphereZoom = 1.65;
+                            window.sphereZoom = sphereSelectedZoom;
                             break;
                         }
                     }
@@ -773,7 +996,7 @@ Item {
                 text: ""
                 font.family: "Iosevka Nerd Font"
                 font.pixelSize: window._s16
-                color: window.subtext0
+                color: window.polySubtext0
                 MouseArea {
                     anchors.fill: parent
                     cursorShape: Qt.PointingHandCursor
