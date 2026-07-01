@@ -131,10 +131,12 @@ Item {
             onStreamFinished: {
                 var raw = {};
                 var txt = this.text.trim();
+                var loaded = false;
                 if (txt.length > 0) {
                     try {
                         raw = JSON.parse(txt);
                         console.log("POLYSPHERE: Config loaded from", configPath);
+                        loaded = true;
                     } catch (e) {
                         console.log("POLYSPHERE ERROR: Failed to parse config -", String(e));
                         console.log("POLYSPHERE ERROR: Falling back to defaults");
@@ -144,6 +146,10 @@ Item {
                 }
                 window.cfg = window.deepMerge(window.defaultConfig, raw);
                 window.writeDebugDump(window.cfg);
+                if (loaded) {
+                    console.log("POLYSPHERE: Config loaded successfully. Stopping poll.");
+                    configWatcher.running = false;
+                }
             }
         }
     }
@@ -164,7 +170,9 @@ Item {
         }
     }
 
-    // Hot-reload: poll config file every 5 seconds
+    // Poll for config on startup; keeps polling if file is missing.
+    // Stops automatically after a successful load.
+    // Trigger a manual re-read via: quickshell ipc -p shell.qml call polysphere reloadConfig
     Timer {
         id: configWatcher
         interval: 5000
@@ -172,6 +180,19 @@ Item {
         repeat: true
         triggeredOnStart: true
         onTriggered: {
+            configReader.running = false;
+            configReader.running = true;
+            configFallback.running = false;
+            configFallback.running = true;
+        }
+    }
+
+    // IPC handler for manual config reload
+    IpcHandler {
+        target: "polysphere"
+
+        function reloadConfig(): void {
+            console.log("POLYSPHERE: Manual config reload triggered via IPC");
             configReader.running = false;
             configReader.running = true;
             configFallback.running = false;

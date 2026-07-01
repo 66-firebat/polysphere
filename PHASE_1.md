@@ -354,7 +354,7 @@ Process {
 }
 ```
 
-### 4.4 Config Watcher (Hot-Reload)
+### 4.4 Config Watcher (Poll on startup, stop after load)
 
 ```qml
 Timer {
@@ -373,6 +373,40 @@ Timer {
 ```
 
 When `cfg` changes, the QML bindings react automatically because all UI properties are bound to `cfg.*` paths.
+
+The timer stops itself after a successful load via `configWatcher.running = false` inside `configReader.onStreamFinished`. This avoids unnecessary I/O every 5 seconds. If the config file is missing, the timer keeps running so it can pick up the file if the user creates it later.
+
+### 4.5 IPC Handler (Manual Reload)
+
+A Quickshell `IpcHandler` exposes a `reloadConfig` function that can be called externally to trigger a config re-read at any time:
+
+```qml
+IpcHandler {
+    target: "polysphere"
+
+    function reloadConfig(): void {
+        console.log("POLYSPHERE: Manual config reload triggered via IPC");
+        configReader.running = false;
+        configReader.running = true;
+        configFallback.running = false;
+        configFallback.running = true;
+    }
+}
+```
+
+**Usage:**
+```bash
+# Reload config for the instance launched with -p shell.qml
+quickshell ipc -p shell.qml call polysphere reloadConfig
+
+# Or target a specific instance by shell ID
+quickshell ipc --id 5e09d58d call polysphere reloadConfig
+
+# List registered targets (to verify)
+quickshell ipc -p shell.qml show
+```
+
+This is the primary mechanism for hot-reload after the initial polling timer stops.
 
 ### 4.5 Debug Dump
 
@@ -781,7 +815,7 @@ echo "════════════════════════�
 | T2 | Partial config (3 keys) | Only those 3 keys differ from defaults. Every other key equals the hardcoded default. |
 | T3 | Malformed JSON | `cfg` equals full defaults. Error logged to console. |
 | T4 | Missing config file | `cfg` equals full defaults. Warning logged to console. |
-| T5 | Hot-reload | Edit `polysphere.json` while running (wait up to 5s), see properties update live (manual test initially; can be automated with `inotifywait` + debug dump re-check in a later refinement) |
+| T5 | IPC reload | Launch with valid config, verify `quickshell ipc call polysphere reloadConfig` triggers a re-read. Verifiable via debug dump timestamp/contents. |
 
 ---
 
@@ -829,7 +863,7 @@ See §1.2 table above.
 - [ ] Add `configPath` resolution property (env var → default)
 - [ ] Add `configReader` Process for reading config file
 - [ ] Add `configFallback` Process for detecting missing file
-- [ ] Add `configWatcher` Timer for hot-reload (5s interval)
+- [x] Add `configWatcher` Timer for initial poll + auto-stop after successful load (5s interval)
 - [ ] Add `writeDebugDump()` function
 - [ ] Wire every hardcoded property to `cfg.*` (see §5 mapping)
 - [ ] Update `shell.qml`: move from `applauncher_view/`, fix loader source, fix namespace

@@ -16,7 +16,7 @@ Test framework for validating PolySphere components. Each phase has its own test
 
 ```
 Phase 1: Config Reader Tests
-  Passed: 4
+  Passed: 5
   Failed: 0
 ```
 
@@ -26,6 +26,7 @@ Phase 1: Config Reader Tests
 | T2 | Partial config | Only `totalApps`, `baseSphereRadius`, `base`/`text` colors set; all else defaults | ✅ PASS | Deep merge preserved sibling keys. Unset keys fell back to `polysphere.json` defaults. |
 | T3 | Malformed JSON | Invalid JSON `{ this is not valid json }` produces fallback to full defaults | ✅ PASS | Console logged: `POLYSPHERE ERROR: Failed to parse config - SyntaxError: JSON.parse: Parse error`. Debug dump shows full defaults. |
 | T4 | Missing config | Nonexistent file at `/tmp/polysphere-nonexistent-test.json` produces fallback with warning | ✅ PASS | Double-warning logged (configReader + configFallback converge on same defaults). No crash. |
+| T5 | IPC reload | `quickshell ipc call polysphere reloadConfig` triggers fresh config re-read | ✅ PASS | Target registered, function callable, config re-reads and debug dump updates |
 
 ### Console Output Notes
 
@@ -44,15 +45,19 @@ WARN qt.qpa.services: Failed to register with host portal
 ```
 This is a D-Bus portal registration warning from the host environment — unrelated to PolySphere.
 
-### T5: Hot-Reload (Manual)
+### T5: IPC Reload
 
-**Status**: ⏳ NOT YET TESTED
+**Status**: ✅ PASS
 
 **Procedure**:
-1. Launch `quickshell -p shell.qml`
-2. Edit `polysphere.json` while running
-3. Wait up to 5 seconds for `configWatcher` to re-read
-4. Observe UI update with new values
+1. Launch `quickshell -p shell.qml` with valid config
+2. Run `quickshell ipc -p shell.qml call polysphere reloadConfig`
+3. Observe console: `"Manual config reload triggered via IPC"` followed by a fresh config load
+
+**Observations**:
+- `quickshell ipc show` lists `target polysphere` with `function reloadConfig(): void`
+- After IPC call, config is re-read and debug dump is updated
+- Works with `--id <shell-id>` or `-p shell.qml` targeting
 
 ### Known Gaps
 
