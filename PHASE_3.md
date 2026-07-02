@@ -19,10 +19,10 @@
 ┌──────────────────────────┐   IPC (Unix socket)   ┌────────────────────┐
 │ polysphere.qml            │◄─────────────────────►│ daemon.scm          │
 │                           │   get_mru, get_app_db │                     │
-│  ┌───────────────────┐   │   cycle_next/prev     │  ┌───────────────┐  │
-│  │ Fuse.js (local)   │   │   activate, cancel    │  │ MRU List      │  │
-│  │   local search    │   │   track_launch        │  │ App Database  │  │
-│  │   on cached DB    │   │                       │  │ (desktop scan)│  │
+│  ┌───────────────────┐   │   activate, cancel    │  ┌───────────────┐  │
+│  │ Tab cycling       │   │   track_launch        │  │ MRU List      │  │
+│  │ (local via        │   │                       │  │ App Database  │  │
+│  │  appModel index)  │   │                       │  │ (desktop scan)│  │
 │  └───────────────────┘   │                       │  └───────────────┘  │
 │                           │                       │                     │
 │  IpcHandler "polysphere"  │                       │                     │
@@ -36,6 +36,17 @@
 │ IPC call to QML  │
 └──────────────────┘
 ```
+
+### Design Note: Local Tab Cycling vs Daemon `cycle_next`
+
+**Problem:** The daemon's internal MRU list only tracks apps that have been activated at least once (via `hyprctl` focus events). The `get_mru` response backfills non-running whitelisted apps to produce the full combined list shown on the sphere. But `cycle_next`/`cycle_prev` only iterate through daemon's **internal** list, which may be much smaller than what's visible.
+
+**Solution:** Tab/Shift+Tab cycling is handled **locally in QML** by advancing `selectedAppIndex` through `appModel` (the visible ListModel). This ensures:
+- ALL entries cycle through — running apps AND non-running launch targets
+- During search, only filtered results are cycled
+- No IPC round-trip needed for every Tab press
+
+The daemon's `cycle_next`/`cycle_prev` handlers still exist (Phase 2) but are no longer used by the QML overlay. They remain for potential future use by other clients.
 
 ### Data Flow
 
@@ -55,8 +66,8 @@ Daemon returns mru list + app database
 
 User presses Tab
   │
-  ├─ QML sends cycle_next to daemon
-  ├─ Daemon advances cursor, returns selected
+  ├─ QML cycles locally: selectedAppIndex = (selectedAppIndex + 1) % appModel.count
+  ├─ No daemon communication needed — cycles through whatever is visible
   └─ Sphere highlights new selection
 
 User types "thun"
@@ -382,32 +393,23 @@ Item {
     property bool altHeld: false
     property bool tabWasPressed: false
     
+    Keys.priority: Keys.BeforeItem
     Keys.onPressed: (event) => {
-        if (event.key === Qt.Key_Alt) {
+        if (event.key === Qt.Key_Alt && !event.isAutoRepeat) {
             altHeld = true;
             event.accepted = true;
         }
         
-        if (event.key === Qt.Key_Tab && (event.modifiers & Qt.AltModifier)) {
+        // Tab/Shift+Tab cycles through the visible appModel, NOT the daemon's MRU.
+        // This ensures ALL entries (running + non-running whitelisted)
+        // are cycled through, not just the daemon's internal MRU list.
+        if ((event.key === Qt.Key_Tab || event.key === Qt.Key_Backtab) && (event.modifiers & Qt.AltModifier)) {
             tabWasPressed = true;
-            if (event.isAutoRepeat) {
-                // Alt held + Tab held (auto-repeat) — cycle continuously
-                daemonRequest("cycle_next", {}, function(r) {
-                    if (r.selected) updateSelection(r.selected);
-                });
-            } else {
-                daemonRequest("cycle_next", {}, function(r) {
-                    if (r.selected) updateSelection(r.selected);
-                });
+            if (appModel.count > 0) {
+                var dir = (event.key === Qt.Key_Tab) ? 1 : -1;
+                var nextIndex = (window.selectedAppIndex + dir + appModel.count) % appModel.count;
+                selectByIndex(nextIndex);
             }
-            event.accepted = true;
-        }
-        
-        if (event.key === Qt.Key_Backtab && (event.modifiers & Qt.AltModifier)) {
-            // Shift+Tab
-            daemonRequest("cycle_prev", {}, function(r) {
-                if (r.selected) updateSelection(r.selected);
-            });
             event.accepted = true;
         }
         

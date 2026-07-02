@@ -368,16 +368,7 @@ Item {
 
         // Highlight the daemon's selected app
         if (response.selected) {
-            for (var j = 0; j < response.mru.length; j++) {
-                if (response.mru[j].id === response.selected) {
-                    window.selectedAppIndex = j;
-                    window.selectedAppName = response.mru[j].name || "";
-                    window.selectedAppIcon = response.mru[j].icon || "";
-                    window.selectedAppExec = response.mru[j].exec || "";
-                    centerOnApp(j);
-                    break;
-                }
-            }
+            updateSelection(response.selected);
         }
 
         window.sphereZoom = 1.0;
@@ -628,11 +619,6 @@ Item {
         }
     }
 
-    Shortcut {
-        sequence: cfg.keybindings?.cancel ?? "Escape"
-        onActivated: closeSequence.start()
-    }
-
     SequentialAnimation {
         id: closeSequence
         NumberAnimation { target: window; property: "introPhase"; to: 0.0; duration: window.animExitFade; easing.type: Easing.OutQuint }
@@ -650,6 +636,117 @@ Item {
 
     // Search debounce timer — resets on each keystroke
     readonly property int searchTimerDuration: cfg.search?.delayMs ?? 500
+
+    // ═══════════════════════════════════════════════════════════════
+    // Keyboard Handling
+    // ═══════════════════════════════════════════════════════════════
+
+    Keys.priority: Keys.BeforeItem
+    Keys.onPressed: (event) => {
+        // Alt pressed — start tracking
+        if (event.key === Qt.Key_Alt && !event.isAutoRepeat) {
+            altHeld = true;
+            event.accepted = true;
+        }
+
+        // Tab/Shift+Tab with Alt — cycle through visible appModel (not daemon MRU)
+        if ((event.key === Qt.Key_Tab || event.key === Qt.Key_Backtab) && (event.modifiers & Qt.AltModifier)) {
+            tabWasPressed = true;
+            if (appModel.count > 0) {
+                var dir = (event.key === Qt.Key_Tab) ? 1 : -1;
+                cycleSelection(dir);
+            }
+            event.accepted = true;
+        }
+
+        // Escape — tiered handler: clear search first, then close
+        if (event.key === Qt.Key_Escape) {
+            handleEscape();
+            event.accepted = true;
+        }
+
+        // Letter/digit keys — type into search bar
+        if (!event.isAutoRepeat && event.text.length > 0 && event.text.match(/[a-zA-Z0-9]/)) {
+            searchInput.text += event.text;
+            searchInput.forceActiveFocus();
+            event.accepted = true;
+        }
+    }
+
+    Keys.onReleased: (event) => {
+        // Alt released — activate the selected app if Tab was pressed
+        if (event.key === Qt.Key_Alt) {
+            altHeld = false;
+            if (tabWasPressed) {
+                triggerActivate();
+            }
+            event.accepted = true;
+        }
+    }
+
+    // Highlight a specific app entry by index (used for local cycling)
+    function selectByIndex(index) {
+        if (index < 0 || index >= appModel.count) return;
+        var entry = appModel.get(index);
+        if (!entry) return;
+        window.selectedAppIndex = index;
+        window.selectedAppName = entry.name || "";
+        window.selectedAppIcon = entry.icon || "";
+        window.selectedAppExec = entry.exec || "";
+        centerOnApp(index);
+    }
+
+    // Cycle selection forward (+1) or backward (-1) through the current appModel
+    function cycleSelection(direction) {
+        if (appModel.count === 0) return;
+        var nextIndex = (selectedAppIndex + direction + appModel.count) % appModel.count;
+        selectByIndex(nextIndex);
+    }
+
+    // Find an app by ID in the current appModel and highlight it
+    function updateSelection(selectedId) {
+        for (var i = 0; i < appModel.count; i++) {
+            var entry = appModel.get(i);
+            if (entry && entry.id === selectedId) {
+                selectByIndex(i);
+                break;
+            }
+        }
+    }
+
+    // Activate the currently selected app — focus if running, launch if not
+    function triggerActivate() {
+        var idx = window.selectedAppIndex;
+        if (idx < 0 || idx >= appModel.count) return;
+        var entry = appModel.get(idx);
+        if (!entry) return;
+
+        if (entry.running) {
+            daemonRequest("activate", {app: entry.id}, function(r) {
+                if (r.ok) closeOverlay();
+            });
+        } else {
+            Quickshell.execDetached(["bash", "-c", entry.exec || entry.id]);
+            daemonRequest("track_launch", {app: entry.id}, function(r) {});
+            closeOverlay();
+        }
+    }
+
+    // Tiered Escape: clear search first, then close overlay
+    function handleEscape() {
+        if (searchInput.text.length > 0) {
+            searchInput.text = "";
+            searchQuery = "";
+            searchTimer.running = false;
+            if (currentMruList.length > 0) {
+                restoreFullSphere();
+            }
+        } else {
+            daemonRequest("cancel", {}, function(r) {
+                closeOverlay();
+            });
+        }
+    }
 
     Timer {
         id: searchTimer

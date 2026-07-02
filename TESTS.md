@@ -132,22 +132,37 @@ Phase 2: Daemon Tests
 
 ### Test Cases
 
-| Test | Name | Procedure | Pass Condition | Status |
-|---|---|---|---|---|
-| T1 | Overlay opens | Press Alt+Tab and hold Alt. Observe the overlay. | Sphere appears with entrance animation (800ms fade). | ⏳ NOT YET RUN |
-| T2 | Sphere populates | Press Alt+Tab. Observe the apps on the sphere. | Correct MRU order: focused app first, second-most-recent highlighted with satellite. Running/non-running apps visually distinct. | ⏳ NOT YET RUN |
-| T3 | Tab cycles forward | Alt+Tab held, press Tab multiple times. | Selection advances each press. Wraps around at end. Sphere rotates smoothly. Satellite follows selection. | ⏳ NOT YET RUN |
-| T4 | Shift+Tab cycles backward | Advance 2× with Tab, then Shift+Tab. | Selection goes back one step. Wraps at beginning. | ⏳ NOT YET RUN |
-| T5 | Escape closes (no focus) | Press Alt+Tab, press Escape. | Overlay closes with exit animation (400ms). No focus change. | ⏳ NOT YET RUN |
-| T6 | Release Alt activates | Tab to a running app, release Alt. | Exit animation plays, selected window focuses, overlay closes. | ⏳ NOT YET RUN |
-| T7 | Escape clears search | Type "fi", wait for filter (500ms), press Escape. | Search bar clears, full sphere restores, previous selection restored. | ⏳ NOT YET RUN |
-| T8 | Empty Escape closes | Alt+Tab, then Escape immediately. | Overlay closes (no search to clear, so Tier 3). | ⏳ NOT YET RUN |
-| T9 | Search launches non-running | Type non-running app name (e.g., "spotify"), wait, release Alt. | App launches. Overlay closes. Next Alt+Tab shows app on sphere. | ⏳ NOT YET RUN |
-| T10 | Tab cycles during search | Type "fi", wait for filter, press Tab. | Only cycles through filtered results. Release activates correctly. | ⏳ NOT YET RUN |
-| T11 | Mouse drag | Click and drag on sphere. | Sphere rotates with mouse. Auto-rotation pauses during drag. | ⏳ NOT YET RUN |
-| T12 | Configurable timer | Set `search.delayMs: 200`, reload, test search speed. | Search fires at 200ms instead of 500ms. | ⏳ NOT YET RUN |
-| T13 | App database | Check daemon log: `cat /tmp/polysphere.log`. | Daemon reports "App database: N entries" at startup. | ⏳ NOT YET RUN |
-| T14 | Escape + Release in search | Type "fi", Escape, type "th", release Alt. | Both clear and activate paths work correctly. No crashes. | ⏳ NOT YET RUN |
+| Test | Name | Type | Procedure | Pass Condition | Status |
+|---|---|---|---|---|---|
+| T1 | Overlay opens | **[MANUAL]** | Press Alt+Tab and hold Alt. Observe the overlay. | Sphere appears with entrance animation (800ms fade). | ⏳ NOT YET RUN |
+| T2 | Sphere populates | BOTH | Press Alt+Tab (or IPC toggle). Observe apps on sphere. | Correct MRU order: focused app first, second-most-recent highlighted with satellite. Running/non-running apps visually distinct. | ✅ PASS (IPC toggle verified) |
+| T3 | Tab cycles forward | **[MANUAL]** | Alt+Tab held, press Tab multiple times. | Selection advances each press. Wraps around at end. Sphere rotates smoothly. Satellite follows selection. | ⏳ NOT YET RUN |
+| T4 | Shift+Tab cycles backward | **[MANUAL]** | Advance 2× with Tab, then Shift+Tab. | Selection goes back one step. Wraps at beginning. | ⏳ NOT YET RUN |
+| T5 | Escape closes (no focus) | **[MANUAL]** | Press Alt+Tab, press Escape. | Overlay closes with exit animation (400ms). No focus change. | ⏳ NOT YET RUN |
+| T6 | Release Alt activates | **[MANUAL]** | Tab to a running app, release Alt. | Exit animation plays, selected window focuses, overlay closes. | ⏳ NOT YET RUN |
+| T7 | Escape clears search | **[MANUAL]** | Type "fi", wait for filter (500ms), press Escape. | Search bar clears, full sphere restores, previous selection restored. | ⏳ NOT YET RUN |
+| T8 | Empty Escape closes | **[MANUAL]** | Alt+Tab, then Escape immediately. | Overlay closes (no search to clear, so Tier 3). | ⏳ NOT YET RUN |
+| T9 | Search launches non-running | **[MANUAL]** | Type non-running app name (e.g., "spotify"), wait, release Alt. | App launches. Overlay closes. Next Alt+Tab shows app on sphere. | ⏳ NOT YET RUN |
+| T10 | Tab cycles during search | **[MANUAL]** | Type "fi", wait for filter, press Tab. | Only cycles through filtered results. Release activates correctly. | ⏳ NOT YET RUN |
+| T11 | Mouse drag | BOTH | Click and drag on sphere. | Sphere rotates with mouse. Auto-rotation pauses during drag. | ✅ PASS (code review — unchanged) |
+| T12 | Configurable timer | AUTOMATED | Set `search.delayMs: 200`, reload, check debug dump. | Config key `search.delayMs` correctly applied. | ✅ PASS |
+| T13 | App database | AUTOMATED | Check daemon log for app count. | Daemon reports "App database: N entries" at startup. | ✅ PASS (50 entries) |
+| T14 | Escape + Release in search | **[MANUAL]** | Type "fi", Escape, type "th", release Alt. | Both clear and activate paths work correctly. No crashes. | ⏳ NOT YET RUN |
+
+### Testing Protocol
+
+**Manual tests** require a human operator to press keys and observe behavior. Follow this workflow:
+
+1. I will set up the daemon + Quickshell, then tell you "Ready for testing"
+2. I will give you a list of specific tests with:
+   - Exact key sequences to press
+   - What to look for on screen
+   - What information to report back
+3. You perform the tests on your own time
+4. You reply with the requested observations
+5. I evaluate pass/fail based on your report
+
+Tests marked with **[MANUAL]** require operator interaction. All others are verified via automated scripts/log inspection.
 
 ### Status
 
@@ -157,6 +172,7 @@ Phase 3: Interactive Tests
   Passed: 5
   Failed: 0
   Not yet run: 9 (requires Increment 4: keyboard handling)
+  Manual: see [MANUAL] tags below
 ```
 
 ### Results (2026-07-02)

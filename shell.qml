@@ -17,19 +17,20 @@ PanelWindow {
     implicitHeight: root.screen.height
 
     Loader {
+        id: loader
         anchors.fill: parent
         source: "polysphere.qml"
     }
 
-    // Click outside to close
+    // Click outside to close the overlay (does NOT quit the process)
     MouseArea {
         anchors.fill: parent
         z: -1
-        onClicked: Qt.quit()
-    }
-
-    Shortcut {
-        sequence: "Escape"
-        onActivated: Qt.quit()
+        onClicked: {
+            var poly = loader.item;
+            if (poly && poly.closeOverlay) {
+                poly.closeOverlay();
+            }
+        }
     }
 }
