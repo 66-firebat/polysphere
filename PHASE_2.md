@@ -484,24 +484,24 @@ assert "selected" in data
 
 ## 8. Implementation Checklist
 
-- [ ] Create `daemon.scm` with:
-  - [ ] CLI argument parser (--help, --config, --socket, --verbose)
-  - [ ] `--help` output with full protocol documentation
-  - [ ] Config reader (reads `polysphere.json`)
-  - [ ] Unix domain socket server (accept → read → dispatch → respond → close)
-  - [ ] MRU list data structure with maxEntries limit
-  - [ ] `get_mru` handler (poll hyprctl, filter, fill from whitelist)
-  - [ ] `cycle_next` / `cycle_prev` handlers (cursor with wrap)
-  - [ ] `activate` handler (reorder MRU, dispatch hyprctl)
-  - [ ] `cancel` handler (no-op)
-  - [ ] Error handling (malformed JSON, unknown type, hyprctl failure)
-  - [ ] Logging (stderr + `/tmp/polysphere.log`)
-  - [ ] Signal handling (SIGTERM/SIGINT for clean shutdown)
-- [ ] Create `tests/config_daemon.json` with known values
-- [ ] Create `tests/test_daemon.sh` with Python-based test harness
-- [ ] Run test suite: all T1–T18 pass
-- [ ] Update `TESTS.md` with PHASE_2_TESTING block
-- [ ] Update `README.md` with socket location and daemon instructions
+- [x] Create `daemon.scm` with:
+  - [x] CLI argument parser (--help, --config, --socket, --verbose)
+  - [x] `--help` output with full protocol documentation
+  - [x] Config reader (reads `polysphere.json`)
+  - [x] Unix domain socket server (accept → read → dispatch → respond → close)
+  - [x] MRU list data structure with maxEntries limit
+  - [x] `get_mru` handler (poll hyprctl, filter, fill from whitelist)
+  - [x] `cycle_next` / `cycle_prev` handlers (cursor with wrap)
+  - [x] `activate` handler (reorder MRU, dispatch hyprctl)
+  - [x] `cancel` handler (no-op)
+  - [x] Error handling (malformed JSON, unknown type, hyprctl failure)
+  - [x] Logging (stderr + `/tmp/polysphere.log`)
+  - [x] Signal handling (SIGTERM/SIGINT for clean shutdown)
+- [x] Create `tests/config_daemon.json` with known values
+- [x] Create `tests/test_daemon.sh` with Python-based test harness
+- [x] Run test suite: all T1–T18 pass
+- [x] Update `TESTS.md` with PHASE_2_TESTING block
+- [x] Update `README.md` with socket location and daemon instructions
 
 ---
 

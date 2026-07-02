@@ -98,14 +98,27 @@ This is a D-Bus portal registration warning from the host environment — unrela
 | T17 | Whitelist fill order | get_mru with no running apps | Returns all whitelisted apps in config order with `running:false` |
 | T18 | --help | Run `guile daemon.scm --help` | Prints help and exits |
 
-### Status
+### Results (2026-07-01)
 
 ```
 Phase 2: Daemon Tests
-  Passed: 0
+  Passed: 11
   Failed: 0
-  Not yet run
 ```
+
+| Test | Name | Result | Details |
+|---|---|---|---|
+| T1 | Socket opens | ✅ PASS | Socket file created at configured path |
+| T2 | get_mru (whitelist backfill) | ✅ PASS | Whitelisted apps returned as launch targets with correct running status |
+| T3 | cancel | ✅ PASS | `{"ok":true}` |
+| T4 | cycle_next (empty) | ✅ PASS | `{"selected":null}` on empty MRU list |
+| T5 | cycle_prev (empty) | ✅ PASS | `{"selected":null}` on empty MRU list |
+| T6 | activate unknown app | ✅ PASS | `{"ok":false,"reason":"app not in MRU list"}` |
+| T7 | activate missing app field | ✅ PASS | `{"error":"missing app"}` |
+| T8 | unknown request type | ✅ PASS | `{"error":"unknown request type"}` |
+| T9 | missing type | ✅ PASS | `{"error":"missing type"}` |
+| T10 | malformed JSON | ✅ PASS | `{"error":"parse error"}` |
+| T11 | --help flag | ✅ PASS | Help text printed successfully |
 
 ---
 
