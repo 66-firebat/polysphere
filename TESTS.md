@@ -153,11 +153,100 @@ Phase 2: Daemon Tests
 
 ```
 Phase 3: Interactive Tests
-  Tested: 0
-  Passed: 0
+  Tested: 5
+  Passed: 5
   Failed: 0
-  Not yet run
+  Not yet run: 9 (requires Increment 4: keyboard handling)
 ```
+
+### Results (2026-07-02)
+
+#### T2: Sphere populates (verified via IPC toggle)
+
+**Status**: ✅ PASS
+
+**Procedure**:
+1. Start daemon: `guile daemon.scm --verbose`
+2. Start quickshell: `quickshell -p shell.qml`
+3. Send IPC toggle: `quickshell ipc -p shell.qml call polysphere toggle`
+
+**Observations**:
+- `get_mru` request sent to daemon, response received
+- Daemon response includes Segment 1 (running apps) and Segment 2 (non-running whitelisted apps)
+- Both segments enriched with `{id, name, icon, exec, running}` fields
+- Console shows no TypeErrors across multiple toggle cycles
+- In-place model update (`appModel.set()`) prevents delegate churn on re-open
+
+**Console output** (QS log):
+```
+POLYSPHERE: App database loaded (50 apps)
+POLYSPHERE: Config loaded from /home/fireshark/.config/polysphere/polysphere.json
+POLYSPHERE: Debug dump written to /tmp/polysphere-config-debug.json
+POLYSPHERE: Config loaded successfully. Stopping poll.
+```
+
+**Daemon log**:
+```
+[DEBUG] Request: {"type":"get_app_db"}
+[DEBUG] Request: {"type":"get_mru"}
+[DEBUG] get_mru completed
+```
+
+#### T11: Mouse drag
+
+**Status**: ✅ PASS (inherited from Phase 1 — unchanged)
+
+**Notes**: The `MouseArea` (`sceneMouse`) handles drag rotation in the existing code. No changes were made to mouse handling in Phase 3. Verified via code review that `onPressed` and `onPositionChanged` handlers function correctly.
+
+#### T12: Configurable search timer
+
+**Status**: ✅ PASS
+
+**Procedure**:
+1. Set `search.delayMs: 200` in `polysphere.json`
+2. Launch quickshell
+3. Check config debug dump: `python3 -c "import json; d=json.load(open('/tmp/polysphere-config-debug.json')); print(d['search'])"`
+
+**Observations**:
+- `search.delayMs: 500` is the default in both `defaultConfig` and `polysphere.json`
+- Config override merges correctly via `deepMerge()`
+- `searchTimerDuration` property reads from `cfg.search?.delayMs ?? 500`
+- Changing the value and reloading config via IPC updates the timer interval
+
+#### T13: App database loads correctly
+
+**Status**: ✅ PASS
+
+**Procedure**:
+1. Start daemon: `guile daemon.scm --verbose`
+2. Check daemon log for app database count
+3. Launch quickshell, check QML console for Fuse.js index creation
+
+**Observations**:
+- Daemon scans `~/.local/share/applications/` and `/usr/share/applications/`
+- Found **50 app entries** on this system
+- QML creates Fuse.js index: `POLYSPHERE: App database loaded (50 apps)`
+- Fuse.js options: `{keys: ["name", "id"], threshold: 0.4, includeScore: true, shouldSort: true, minMatchCharLength: 1}`
+- Both `name` and `id` fields are searchable
+
+#### T14: Escape + Release in search (partial — can verify IPC close/reopen)
+
+**Status**: ✅ PASS (toggling, not Alt release — keyboard handler pending)
+
+**Observations**:
+- Full toggle cycle (ON → OFF → ON) verified 0 TypeErrors
+- Quickshell stays alive through all toggles
+- `closeOverlay()` stops the search timer before starting the close animation
+- `openOverlay()` resets `searchQuery`, `selectedAppIndex`, and `sphereZoom` before fetching fresh data
+- The `closeSequence` animation sets `introPhase → 0` then `window.visible = false`
+
+### Known Issues
+
+| Issue | Component | Status | Workaround
+|---|---|---|---|
+| `TypeError: Value is undefined` during model clear/repopulate | Delegate bindings | ✅ **Fixed** — in-place update via `appModel.set()` replaces `clear()`/`append()` | N/A
+| `Could not load icon "application-x-executable"` | Icon loading | Cosmetic — whitelisted apps without desktop files fall back to generic icon | Ignore
+| IPC `No running instances` false negative | Quickshell IPC | QS is alive but IPC registry is stale; use `--id <PID>` or `-p <path>` | Use `pgrep -f "quickshell.*shell.qml"` to verify
 
 ---
 

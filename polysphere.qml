@@ -333,9 +333,36 @@ Item {
 
     // Populate the sphere model from a get_mru daemon response
     function populateSphereFromMru(response) {
-        appModel.clear();
-        for (var i = 0; i < response.mru.length; i++) {
-            appModel.append(response.mru[i]);
+        var mru = response.mru;
+        var i = 0;
+
+        // Update existing entries in-place (preserves delegates, avoids TypeErrors)
+        for (; i < appModel.count && i < mru.length; i++) {
+            var entry = mru[i];
+            appModel.set(i, {
+                id: entry.id,
+                name: entry.name || "",
+                icon: entry.icon || "",
+                exec: entry.exec || "",
+                running: entry.running
+            });
+        }
+
+        // Add new entries if response has more
+        for (; i < mru.length; i++) {
+            var entry = mru[i];
+            appModel.append({
+                id: entry.id,
+                name: entry.name || "",
+                icon: entry.icon || "",
+                exec: entry.exec || "",
+                running: entry.running
+            });
+        }
+
+        // Remove excess entries if model has more
+        while (appModel.count > mru.length) {
+            appModel.remove(appModel.count - 1, 1);
         }
         window.selectedAppIndex = -1;
 
@@ -642,7 +669,11 @@ Item {
     // Run Fuse.js search and update the sphere model
     function executeSearch() {
         if (searchQuery === "") {
-            restoreFullSphere();
+            // Don't call restoreFullSphere here — the model was already
+            // populated by get_mru response in openOverlay.
+            // Calling it again would clear/repopulate unnecessarily,
+            // triggering TypeErrors in delegate bindings during transition.
+            window.sphereZoom = 1.0;
             return;
         }
 
@@ -792,7 +823,7 @@ Item {
                     readonly property string _icon: String(_m.icon || "")
                     readonly property string _exec: String(_m.exec || "")
 
-                    property var proj: (window.projCache && window.projCache.length > index)
+                    property var proj: (typeof index !== "undefined" && window.projCache && window.projCache.length > index)
                                        ? window.projCache[index]
                                        : { x: 0, y: 0, z: 0 }
 
