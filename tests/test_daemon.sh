@@ -145,13 +145,13 @@ else
     FAIL=$((FAIL + 1))
 fi
 
-# T2: get_mru with whitelist backfill
-# Uses config_full.json which has whitelistedApps: ["firefox", "kitty"]
-# The daemon returns them as launch targets (running status depends on session)
-run_test "T2: get_mru (whitelist backfill)" \
-    '{"type":"get_mru"}' \
-    '{"mru":[{"id":"firefox","running":true},{"id":"kitty","running":false}],"current":"firefox","selected":"kitty"}' \
-    "Whitelisted apps returned as launch targets, MRU history empty"
+# T2: get_mru with whitelist backfill — enriched entries
+echo ""
+echo "─── Test: T2: get_mru (whitelist backfill, enriched) ───"
+echo "  Validating enriched entry structure (id, running, name, icon, exec)"
+python3 "$REPO_DIR/tests/test_t2_enriched.py" "$SOCKET_PATH" 2>&1 && \
+    echo "  ✓ PASS" && PASS=$((PASS + 1)) || \
+    { echo "  ✗ FAIL"; FAIL=$((FAIL + 1)); }
 
 # T3: cancel
 run_test "T3: cancel" \

@@ -23,6 +23,7 @@
 (use-modules (ice-9 getopt-long))
 (use-modules (ice-9 popen))
 (use-modules (srfi srfi-11))
+(use-modules (ice-9 ftw))
 
 ;; ────────────────────────────────────────────────────────────────
 ;; Constants
@@ -142,6 +143,8 @@ EXAMPLES:
 (define verbose? #f)          ;; verbose logging flag
 (define log-port #f)          ;; log file port
 (define running #t)           ;; set to #f to trigger graceful shutdown
+(define app-database '())       ;; cached app database from .desktop files
+(define app-database-vec #())   ;; vector form for scm->json-string
 
 ;; ────────────────────────────────────────────────────────────────
 ;; Helpers
@@ -384,6 +387,110 @@ EXAMPLES:
 
 
 ;; ────────────────────────────────────────────────────────────────
+;; App Database (.desktop scanner)
+;; ────────────────────────────────────────────────────────────────
+
+(define %desktop-search-paths
+  (list (string-append (getenv "HOME") "/.local/share/applications")
+        "/usr/share/applications"
+        "/usr/local/share/applications"
+        "/run/current-system/sw/share/applications"))
+
+(define (parse-desktop-file path)
+  "Parse a .desktop file. Returns an alist with id, name, icon, exec,
+   or #f if the file should be excluded (NoDisplay=true)."
+  (catch #t
+    (lambda ()
+      (call-with-input-file path
+        (lambda (port)
+          (let loop ((line (read-line port))
+                     (in-desktop-entry #f)
+                     (name #f)
+                     (icon "application-x-executable")
+                     (exec #f)
+                     (no-display #f))
+            (if (eof-object? line)
+                (if (and name (not no-display))
+                    (let* ((basename (basename path))
+                           (id (if (string-suffix? ".desktop" basename)
+                                   (string-drop-right basename (string-length ".desktop"))
+                                   basename)))
+                      `(("id" . ,id)
+                        ("name" . ,name)
+                        ("icon" . ,icon)
+                        ("exec" . ,(or exec name))))
+                    #f)
+                (let* ((trimmed (string-trim-both line))
+                       (section (if (and (> (string-length trimmed) 0)
+                                         (char=? #\[ (string-ref trimmed 0)))
+                                    (let ((end (string-index trimmed #\])))
+                                      (if end (substring trimmed 1 end) #f))
+                                    #f)))
+                  (cond
+                   (section
+                    (loop (read-line port) (string=? section "Desktop Entry") name icon exec no-display))
+                   ((not in-desktop-entry)
+                    (loop (read-line port) #f name icon exec no-display))
+                   (else
+                    (let* ((eq-pos (string-index trimmed #\=))
+                           (key (if eq-pos (string-trim-right (substring trimmed 0 eq-pos)) ""))
+                           (val (if eq-pos (string-trim (substring trimmed (1+ eq-pos))) "")))
+                      (cond
+                       ((string=? key "Name") (loop (read-line port) #t val icon exec no-display))
+                       ((string=? key "Icon") (loop (read-line port) #t name val exec no-display))
+                       ((string=? key "Exec") (loop (read-line port) #t name icon val no-display))
+                       ((string=? key "NoDisplay")
+                        (loop (read-line port) #t name icon exec (or (string=? val "true") no-display)))
+                       (else (loop (read-line port) #t name icon exec no-display))))))))))))
+    (lambda (key . args)
+      ;; Quietly skip unreadable files
+      #f)))
+
+(define (scan-desktop-files)
+  "Scan all .desktop files from standard paths. Returns a list of app alists."
+  (append-map
+    (lambda (dir)
+      (catch #t
+        (lambda ()
+          (let ((entries (scandir dir)))
+            (if entries
+                (filter-map
+                  (lambda (f)
+                    (and (string-suffix? ".desktop" f)
+                         (parse-desktop-file (string-append dir "/" f))))
+                  entries)
+                '())))
+        (lambda _ '())))
+    %desktop-search-paths))
+
+(define (init-app-database)
+  "Initialize the app database by scanning .desktop files."
+  (set! app-database (scan-desktop-files))
+  (set! app-database-vec (list->vector app-database))
+  (log-msg "INFO" (string-append "App database: "
+                                   (number->string (length app-database))
+                                   " entries")))
+
+(define (lookup-app id)
+  "Look up an app in the database by id. Returns the app alist or #f."
+  (find (lambda (entry) (string=? (assoc-ref* entry "id") id)) app-database))
+
+(define (enrich-entry-with-db app running?)
+  "Create an enriched MRU entry with name, icon, exec from app database."
+  (let ((db-entry (lookup-app app)))
+    (if db-entry
+        `(("id" . ,app)
+          ("running" . ,running?)
+          ("name" . ,(assoc-ref* db-entry "name" app))
+          ("icon" . ,(assoc-ref* db-entry "icon" "application-x-executable"))
+          ("exec" . ,(assoc-ref* db-entry "exec" app)))
+        `(("id" . ,app)
+          ("running" . ,running?)
+          ("name" . ,app)
+          ("icon" . "application-x-executable")
+          ("exec" . ,app)))))
+
+;; ────────────────────────────────────────────────────────────────
 ;; JSON Response Builders
 ;; ────────────────────────────────────────────────────────────────
 
@@ -396,12 +503,20 @@ EXAMPLES:
    Segment 1: Running apps from MRU list (switching targets).
    Segment 2: Non-running whitelisted apps (launch targets)."
 
-  ;; --- Segment 1: switching targets ---
+  ;; --- Segment 1: switching targets (running MRU apps) ---
   (let* ((segment1-ids (filter (lambda (app) (list-contains? running-set app)) mru-list))
-         (segment1 (map (lambda (app) (enrich-entry app #t)) segment1-ids))
+         (segment1 (map (lambda (app) (enrich-entry-with-db app #t)) segment1-ids))
          (included (list-copy segment1-ids))
 
-         ;; --- Segment 2: launch targets ---
+         ;; --- Segment 1b: tracked-but-not-running MRU apps ---
+         ;; (added via track_launch, not yet running, not in whitelist)
+         (segment1b-ids (filter (lambda (app)
+                                  (not (list-contains? running-set app)))
+                                mru-list))
+         (segment1b (map (lambda (app) (enrich-entry-with-db app #f)) segment1b-ids))
+         (_ (for-each (lambda (app) (set! included (cons app included))) segment1b-ids))
+
+         ;; --- Segment 2: launch targets (whitelist backfill) ---
          (segment2
           (let loop ((remaining whitelist)
                      (acc '())
@@ -416,16 +531,16 @@ EXAMPLES:
                    ((list-contains? running-set app)
                     ;; Running but not in MRU yet — add as switching target
                     (loop (cdr remaining)
-                          (cons (enrich-entry app #t) acc)
+                          (cons (enrich-entry-with-db app #t) acc)
                           (cons app seen)))
                    (else
                     ;; Non-running — add as launch target
                     (loop (cdr remaining)
-                          (cons (enrich-entry app #f) acc)
+                          (cons (enrich-entry-with-db app #f) acc)
                           (cons app seen))))))))
 
-         ;; Combine
-         (mru-list (append segment1 segment2))
+         ;; Combine: segment1 (running MRU) + segment1b (tracked, not running) + segment2 (whitelist)
+         (mru-list (append segment1 segment1b segment2))
          (mru-vec (list->vector mru-list))
 
          ;; Determine current and selected
@@ -540,6 +655,18 @@ EXAMPLES:
   (log-verbose "Handling cancel")
   (scm->json-string (make-ok-response)))
 
+(define (handle-get-app-db)
+  "Handle a get_app_db request — return the full app database."
+  (log-verbose "Handling get_app_db")
+  (scm->json-string `(("apps" . ,app-database-vec))))
+
+(define (handle-track-launch app)
+  "Handle a track_launch request — add app to MRU without hyprctl check."
+  (log-verbose (string-append "Handling track_launch for " app))
+  (mru-push-front app)
+  (log-msg "INFO" (string-append "Tracked launch of " app))
+  (scm->json-string (make-ok-response)))
+
 (define (handle-unknown type)
   "Handle an unknown request type."
   (log-msg "WARN" (string-append "Unknown request type: " type))
@@ -581,6 +708,13 @@ EXAMPLES:
                 (handle-activate app))))
          ((string=? type "cancel")
           (handle-cancel))
+         ((string=? type "get_app_db")
+          (handle-get-app-db))
+         ((string=? type "track_launch")
+          (let ((app (assoc-ref* data "app")))
+            (if (not app)
+                (scm->json-string (make-error-response "missing app"))
+                (handle-track-launch app))))
          (else
           (handle-unknown type)))))
     (lambda (key . args)
@@ -694,6 +828,9 @@ EXAMPLES:
 
        ;; Set up signal handlers
        (setup-signal-handlers)
+
+       ;; Initialize app database
+       (init-app-database)
 
        ;; Run the server
        (run-server socket-path totalApps whitelist)
