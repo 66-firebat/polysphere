@@ -93,10 +93,9 @@ User releases Alt
 | File | Changes |
 |---|---|
 | **`polysphere.qml`** | Daemon IPC bridge, search system, Alt+Tab key handling, legacy code removal. Major rewrite. |
-| **`daemon.scm`** | Add `get_app_db` request handler, add `track_launch` request handler, enrich MRU entries with `name`, `icon`, `exec` fields |
-| **`polysphere.json`** | Add `searchTimer` config key (default 500ms) |
-| **`shell.qml`** | Add `IpcHandler` for `toggle` (or move toggle to polysphere.qml's existing IpcHandler) |
-| **`tests/test_daemon.sh`** | Add tests for `get_app_db` and `track_launch` |
+| **`daemon.scm`** | ✅ **Already done** — `get_app_db`, `track_launch`, enriched MRU entries all implemented and tested |
+| **`polysphere.json`** | Add `search.delayMs` config key (default 500ms) |
+| **`tests/test_daemon.sh`** | ✅ **Already done** — tests for `get_app_db` and `track_launch` added |
 | **`TESTS.md`** | Add PHASE_3_TESTING with manual procedures |
 
 ### Deleted References
@@ -105,6 +104,13 @@ From `polysphere.qml`:
 - `paths.qsDir + "/applauncher/app_fetcher.py"` (appFetcher Process — line 454)
 - `paths.qsDir + "/applauncher/app_fetcher.py"` (launchApp logging — line 508)
 - `paths.serpantinumDir + "/scripts/qs_manager.sh"` (close sequence — line 440)
+- `Caching { id: paths }` instantiation and all `paths.*` references
+- `import Qt5Compat.GraphicalEffects` (removed in Phase 1)
+- `import QtQuick.Window` (removed in Phase 1)
+- `import "../"` (removed in Phase 1)
+
+**Deleted from repo:**
+- `Caching.qml` — replaced by inline `daemonSocket` resolution in `polysphere.qml`
 
 ---
 
@@ -190,7 +196,7 @@ The search timer is read by QML from `cfg` (the existing config system from Phas
 
 ```qml
 // fuse.js is a .pragma library, imported like a JS module
-import "../lib/fuse.js" as FuseJs
+import "lib/fuse.js" as FuseJs
 ```
 
 ### 4.2 Daemon IPC Bridge
@@ -310,7 +316,7 @@ function executeSearch() {
     populateSearchResults(topResults);
     
     // Auto-select the first result
-    if (searchModel.count > 0) {
+    if (appModel.count > 0) {
         selectedAppIndex = 0;
         centerOnApp(0);
         sphereZoom = sphereSelectedZoom;
@@ -318,7 +324,7 @@ function executeSearch() {
 }
 
 function populateSearchResults(fuseResults) {
-    searchModel.clear();
+    appModel.clear();
     
     // Build a set of running app IDs from the last get_mru response
     var runningIds = {};
@@ -342,19 +348,19 @@ function populateSearchResults(fuseResults) {
     
     // Segment 2: non-running apps, sorted by Fuse score
     for (var k = 0; k < running.length; k++) {
-        searchModel.append(running[k]);
+        appModel.append(running[k]);
     }
     for (var l = 0; l < nonRunning.length; l++) {
-        searchModel.append(nonRunning[l]);
+        appModel.append(nonRunning[l]);
     }
 }
 
 // Restore the sphere to the daemon's MRU list
 function restoreFullSphere() {
-    searchModel.clear();
+    appModel.clear();
     // Repopulate from last get_mru response
     for (var i = 0; i < currentMruList.length; i++) {
-        searchModel.append(currentMruList[i]);
+        appModel.append(currentMruList[i]);
     }
     // Restore previous selection
     window.selectedAppIndex = savedSelectionIndex;
@@ -580,14 +586,15 @@ Add to `defaultConfig` in `polysphere.qml`:
 
 **Removed from polysphere.qml:**
 
-1. The entire `appFetcher` Process (was lines ~446-467) — replaced by `daemonRequest("get_mru", ...)` and `daemonRequest("get_app_db", ...)`
-2. The `handleSearch` function — replaced by new search system with Fuse.js
-3. The `launchApp` function — replaced by `triggerActivate()` which uses daemon `activate` or direct `execDetached`
-4. The `closeSequence`'s `ScriptAction` calling `qs_manager.sh` — replaced by daemon `cancel`
-5. The old `Shortcut` for Escape — replaced by tiered `handleEscape()`
-6. All `paths` references to `app_fetcher.py` and `qs_manager.sh`
+1. The entire `appFetcher` Process (was lines ~446-467) — replaced by `daemonProcess` + `daemonRequest()`
+2. The `handleSearch` function — replaced by new Fuse.js search system with `handleSearchInput()` + `executeSearch()`
+3. The `launchApp` function — replaced by `triggerActivate()` which uses daemon `activate`/`track_launch` or direct `execDetached`
+4. The `closeSequence`'s `ScriptAction` calling `qs_manager.sh` — replaced by `window.visible = false`
+5. The old `Shortcut` for Escape — replaced by tiered `handleEscape()` (clear search → close overlay)
+6. All `paths.*` references to `app_fetcher.py`, `qs_manager.sh`, and the `Caching { id: paths }` instantiation
 
 **Removed from repo:**
+- `Caching.qml` — no longer needed; `daemonSocket` resolution is inline in `polysphere.qml`
 - `tests/config_daemon.json` (no longer needed — already using `config_full.json`)
 - Any remaining references to `MatugenColors`, `app_fetcher`, `qs_manager`
 
@@ -1014,32 +1021,35 @@ Test runner: none — you perform these manually.
 
 ## 12. Implementation Checklist
 
-- [ ] **Daemon changes:**
-  - [ ] Add `.desktop` file scanner at startup
-  - [ ] Add `get_app_db` request handler
-  - [ ] Add `track_launch` request handler
-  - [ ] Enrich MRU entries with `name`, `icon`, `exec` from app database
-  - [ ] Update `--help` output with new request types
-- [ ] **QML changes:**
+- [x] **Daemon changes:** ✅ **Complete**
+  - [x] Add `.desktop` file scanner at startup
+  - [x] Add `get_app_db` request handler
+  - [x] Add `track_launch` request handler
+  - [x] Enrich MRU entries with `name`, `icon`, `exec` from app database
+  - [x] Update `--help` output with new request types
+- [ ] **QML changes:** (remaining work)
   - [ ] Add Fuse.js import (`lib/fuse.js`)
-  - [ ] Add daemon IPC bridge (`daemonProcess` + `daemonRequest()`)
-  - [ ] Add search system (app database, Fuse index, timer, execute)
-  - [ ] Add Alt+Tab key handling (Keys.onPressed/onReleased)
+  - [ ] Add `search.delayMs` to `defaultConfig`
+  - [ ] Add state variables: `appDatabase`, `fuseIndex`, `currentMruList`, `daemonSocket`, etc.
+  - [ ] Add daemon IPC bridge — replace `appFetcher` with `daemonProcess` + `daemonRequest()`
+  - [ ] Add search system (Fuse index, debounce timer, executeSearch, restoreFullSphere)
   - [ ] Add IpcHandler `toggle()` function
-  - [ ] Add overlay lifecycle (`openOverlay`, `closeOverlay`)
-  - [ ] Add Escape tier handling (clear search → close)
-  - [ ] Remove legacy code (appFetcher, qs_manager, old search)
-  - [ ] Add `search.delayMs` to defaultConfig
-  - [ ] Update shell.qml if needed
+  - [ ] Add overlay lifecycle (`openOverlay`, `closeOverlay`, `populateSphereFromMru`)
+  - [ ] Add Alt+Tab key handling (`Keys.onPressed`/`onReleased`, `updateSelection`, `triggerActivate`)
+  - [ ] Add tiered Escape handler (clear search → close overlay)
+  - [ ] Remove legacy code: `handleSearch()`, `launchApp()`, `paths.*` refs, `qs_manager.sh`, `Caching { id: paths }`
+  - [ ] Update `searchInput` TextField: wire to `handleSearchInput()`, remove old key handlers
+  - [ ] Update sphere delegate `MouseArea.onClicked` to use `triggerActivate()`-equivalent
+  - [ ] Remove `Caching.qml` from repo
 - [ ] **Config:**
   - [ ] Add `search.delayMs` to `polysphere.json`
 - [ ] **Files:**
-  - [ ] Create `lib/fuse.js`
+  - [x] `lib/fuse.js` — ✅ already created
   - [ ] Create `toggle-launcher.sh`
 - [ ] **Testing:**
   - [ ] Complete T1–T14 manual tests
   - [ ] Update TESTS.md with PHASE_3_TESTING results
-  - [ ] Update daemon test suite for new request types
+  - [x] Daemon test suite — ✅ already updated for new request types
 - [ ] **Documentation:**
   - [ ] Update README.md with search and IPC info
   - [ ] Update PLAN.md with final architecture
