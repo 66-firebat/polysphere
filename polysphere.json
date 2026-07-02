@@ -112,5 +112,9 @@
   "mru": {
     "maxEntries": 20,
     "updateOnExit": true
+  },
+
+  "search": {
+    "delayMs": 500
   }
 }

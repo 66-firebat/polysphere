@@ -4,9 +4,11 @@ import QtQuick.Layouts
 import QtQuick.Controls
 import Quickshell
 import Quickshell.Io
+import "lib/fuse.js" as FuseJs
 
 Item {
     id: window
+    visible: false
     focus: true
 
     implicitWidth: Screen.width
@@ -86,6 +88,9 @@ Item {
         },
         "mru": {
             "maxEntries": 20, "updateOnExit": true
+        },
+        "search": {
+            "delayMs": 500
         }
     })
 
@@ -198,13 +203,164 @@ Item {
             configFallback.running = false;
             configFallback.running = true;
         }
+
+        function toggle(): void {
+            if (window.visible) {
+                closeOverlay();
+            } else {
+                window.visible = true;
+            }
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════
-    // Scaler & Paths
+    // Daemon IPC
     // ═══════════════════════════════════════════════════════════════
 
-    Caching { id: paths }
+    // Daemon socket path
+    readonly property string daemonSocket: {
+        var envSocket = Quickshell.env("POLYSPHERE_SOCKET");
+        if (envSocket) return envSocket;
+        var runtimeDir = Quickshell.env("XDG_RUNTIME_DIR");
+        return (runtimeDir || "/tmp") + "/polysphere.sock";
+    }
+
+    // App database from daemon
+    property var appDatabase: []
+    property var fuseIndex: null
+    property var currentMruList: []
+    property int savedSelectionIndex: -1
+    property bool altHeld: false
+    property bool tabWasPressed: false
+
+    // Fuse.js search options
+    readonly property var fuseOptions: ({
+        keys: ["name", "id"],
+        threshold: 0.4,
+        includeScore: true,
+        shouldSort: true,
+        minMatchCharLength: 1
+    })
+
+    // Helper: send JSON request to daemon via Unix socket
+    function daemonRequest(type, extraData, callback) {
+        var msg = JSON.stringify(Object.assign({type: type}, extraData || {}));
+        var escaped = msg.replace(/'/g, "'\\'");
+        daemonProcess.command = [
+            "bash", "-c",
+            "echo '" + escaped + "' | nc -U " + daemonSocket
+        ];
+        daemonProcess._callback = callback;
+        daemonProcess.running = false;
+        daemonProcess.running = true;
+    }
+
+    // Process for communicating with the daemon
+    Process {
+        id: daemonProcess
+        running: false
+        property var _callback: null
+        stdout: StdioCollector {
+            onStreamFinished: {
+                var txt = this.text.trim();
+                if (txt.length > 0) {
+                    try {
+                        var response = JSON.parse(txt);
+                        if (daemonProcess._callback) {
+                            daemonProcess._callback(response);
+                        }
+                    } catch(e) {
+                        console.log("POLYSPHERE: Daemon parse error:", String(e));
+                    }
+                }
+            }
+        }
+    }
+
+    // Fetch all installed apps from daemon and build Fuse.js index
+    function loadAppDatabase() {
+        daemonRequest("get_app_db", {}, function(response) {
+            if (response.apps) {
+                appDatabase = response.apps;
+                try {
+                    fuseIndex = new FuseJs.Fuse(appDatabase, fuseOptions);
+                    console.log("POLYSPHERE: App database loaded (" + appDatabase.length + " apps)");
+                } catch(e) {
+                    console.log("POLYSPHERE: Fuse init error:", String(e));
+                }
+            }
+        });
+    }
+
+    // Load app database on startup
+    Component.onCompleted: loadAppDatabase()
+
+    // ═══════════════════════════════════════════════════════════════
+    // Overlay Lifecycle
+    // ═══════════════════════════════════════════════════════════════
+
+    // Open the overlay — called by toggle() or onVisibleChanged
+    function openOverlay() {
+        window.altHeld = false;
+        window.tabWasPressed = false;
+        window.searchQuery = "";
+        searchInput.text = "";
+        savedSelectionIndex = window.selectedAppIndex;
+        window.sphereZoom = 1.0;
+
+        // Fetch fresh MRU list from daemon
+        daemonRequest("get_mru", {}, function(response) {
+            if (response.mru) {
+                currentMruList = response.mru;
+                populateSphereFromMru(response);
+            }
+        });
+
+        // Load app database on first open if not already loaded
+        if (fuseIndex === null && appDatabase.length === 0) {
+            loadAppDatabase();
+        }
+
+        introPhaseAnim.restart();
+        searchInput.forceActiveFocus();
+    }
+
+    // Close the overlay — plays exit animation, then hides
+    function closeOverlay() {
+        searchTimer.running = false;
+        closeSequence.start();
+    }
+
+    // Populate the sphere model from a get_mru daemon response
+    function populateSphereFromMru(response) {
+        appModel.clear();
+        for (var i = 0; i < response.mru.length; i++) {
+            appModel.append(response.mru[i]);
+        }
+        window.selectedAppIndex = -1;
+
+        // Highlight the daemon's selected app
+        if (response.selected) {
+            for (var j = 0; j < response.mru.length; j++) {
+                if (response.mru[j].id === response.selected) {
+                    window.selectedAppIndex = j;
+                    window.selectedAppName = response.mru[j].name || "";
+                    window.selectedAppIcon = response.mru[j].icon || "";
+                    window.selectedAppExec = response.mru[j].exec || "";
+                    centerOnApp(j);
+                    break;
+                }
+            }
+        }
+
+        window.sphereZoom = 1.0;
+        window.projDirty = true;
+        window.rebuildProjCache();
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // Scaler
+    // ═══════════════════════════════════════════════════════════════
 
     Scaler {
         id: scaler
@@ -440,12 +596,7 @@ Item {
         target: window
         function onVisibleChanged() {
             if (window.visible) {
-                searchInput.text    = "";
-                window.searchQuery  = "";
-                window.selectedAppIndex = -1;
-                window.sphereZoom   = 1.0;
-                searchInput.forceActiveFocus();
-                introPhaseAnim.restart();
+                openOverlay();
             }
         }
     }
@@ -458,10 +609,9 @@ Item {
     SequentialAnimation {
         id: closeSequence
         NumberAnimation { target: window; property: "introPhase"; to: 0.0; duration: window.animExitFade; easing.type: Easing.OutQuint }
-        ScriptAction { script: Quickshell.execDetached(["bash", paths.serpantinumDir + "/scripts/qs_manager.sh", "close"]) }
+        ScriptAction { script: { window.visible = false; } }
     }
 
-    property var    allApps: []
     property string searchQuery: ""
     property int    selectedAppIndex: -1
 
@@ -469,64 +619,99 @@ Item {
     property string selectedAppIcon: ""
     property string selectedAppExec: ""
 
-    Process {
-        id: appFetcher
-        running: true
-        command: ["bash", "-c", "python3 " + paths.qsDir + "/applauncher/app_fetcher.py"]
-        stdout: StdioCollector {
-            onStreamFinished: {
-                try {
-                    if (this.text && this.text.trim().length > 0) {
-                        window.allApps = JSON.parse(this.text);
-                        let apps  = window.allApps;
-                        let chunk = 40;
-                        let idx   = 0;
-                        function appendChunk() {
-                            let end = Math.min(idx + chunk, apps.length);
-                            for (; idx < end; idx++) appModel.append(apps[idx]);
-                            if (idx < apps.length) Qt.callLater(appendChunk);
-                            else { window.projDirty = true; window.rebuildProjCache(); }
-                        }
-                        appendChunk();
-                    }
-                } catch(e) { console.log("POLYSPHERE: appFetcher error -", String(e)); }
-            }
+    ListModel { id: appModel }
+
+    // Search debounce timer — resets on each keystroke
+    readonly property int searchTimerDuration: cfg.search?.delayMs ?? 500
+
+    Timer {
+        id: searchTimer
+        interval: searchTimerDuration
+        running: false
+        repeat: false
+        onTriggered: executeSearch()
+    }
+
+    // Called on every keystroke in the search bar
+    function handleSearchInput(text) {
+        searchQuery = text;
+        searchTimer.running = false;
+        searchTimer.running = true;
+    }
+
+    // Run Fuse.js search and update the sphere model
+    function executeSearch() {
+        if (searchQuery === "") {
+            restoreFullSphere();
+            return;
+        }
+
+        if (!fuseIndex) return;
+
+        var results = fuseIndex.search(searchQuery);
+        var topResults = results.slice(0, cfg.totalApps || 20);
+        populateSearchResults(topResults);
+
+        if (appModel.count > 0) {
+            selectedAppIndex = 0;
+            selectedAppName = appModel.get(0).name || "";
+            selectedAppIcon = appModel.get(0).icon || "";
+            selectedAppExec = appModel.get(0).exec || "";
+            centerOnApp(0);
+            sphereZoom = sphereSelectedZoom;
         }
     }
 
-    ListModel { id: appModel }
+    // Populate appModel with Fuse results (running first, then non-running by score)
+    function populateSearchResults(fuseResults) {
+        appModel.clear();
 
-    function handleSearch(query) {
-        window.searchQuery = query.toLowerCase();
-        if (window.searchQuery === "") {
-            window.selectedAppIndex = -1;
-            window.selectedAppName  = "";
-            window.selectedAppIcon  = "";
-            window.selectedAppExec  = "";
-            window.sphereZoom       = 1.0;
-            return;
-        }
-        let found = false;
-        for (let i = 0; i < appModel.count; i++) {
-            if (appModel.get(i).name.toLowerCase().includes(window.searchQuery)) {
-                window.selectedAppIndex = i;
-                window.selectedAppName  = appModel.get(i).name;
-                window.selectedAppIcon  = appModel.get(i).icon || "";
-                window.selectedAppExec  = appModel.get(i).exec || "";
-                centerOnApp(i);
-                window.sphereZoom = sphereSelectedZoom;
-                found = true;
-                break;
+        var runningIds = {};
+        for (var i = 0; i < currentMruList.length; i++) {
+            if (currentMruList[i].running) {
+                runningIds[currentMruList[i].id] = true;
             }
         }
-        if (!found) {
-            window.selectedAppIndex = -1;
-            window.sphereZoom       = 1.0;
+
+        var running = [];
+        var nonRunning = [];
+        for (var j = 0; j < fuseResults.length; j++) {
+            var item = fuseResults[j].item;
+            if (runningIds[item.id]) {
+                running.push(item);
+            } else {
+                nonRunning.push(item);
+            }
+        }
+
+        for (var k = 0; k < running.length; k++) {
+            appModel.append(running[k]);
+        }
+        for (var l = 0; l < nonRunning.length; l++) {
+            appModel.append(nonRunning[l]);
+        }
+    }
+
+    // Restore the sphere to the daemon's MRU list
+    function restoreFullSphere() {
+        if (currentMruList.length === 0) return;
+        appModel.clear();
+        for (var i = 0; i < currentMruList.length; i++) {
+            appModel.append(currentMruList[i]);
+        }
+        window.selectedAppIndex = savedSelectionIndex >= 0 ? savedSelectionIndex : 0;
+        window.sphereZoom = 1.0;
+        if (window.selectedAppIndex >= 0 && window.selectedAppIndex < appModel.count) {
+            var entry = appModel.get(window.selectedAppIndex);
+            window.selectedAppName = entry.name || "";
+            window.selectedAppIcon = entry.icon || "";
+            window.selectedAppExec = entry.exec || "";
+            centerOnApp(window.selectedAppIndex);
         }
     }
 
     function launchApp(appName, execStr) {
-        Quickshell.execDetached(["python3", paths.qsDir + "/applauncher/app_fetcher.py", "--log", appName]);
+        // Legacy launch — preserves existing mouse-click behavior
         Quickshell.execDetached(["bash", "-c", execStr]);
         closeSequence.start();
     }
@@ -601,6 +786,12 @@ Item {
                 delegate: Item {
                     id: appNode
 
+                    // Safe model access — model may be undefined during transitions
+                    readonly property var _m: model || {}
+                    readonly property string _name: String(_m.name || "")
+                    readonly property string _icon: String(_m.icon || "")
+                    readonly property string _exec: String(_m.exec || "")
+
                     property var proj: (window.projCache && window.projCache.length > index)
                                        ? window.projCache[index]
                                        : { x: 0, y: 0, z: 0 }
@@ -612,7 +803,11 @@ Item {
 
                     z: Math.round(proj.z * 1000)
 
-                    property bool isMatch:    window.searchQuery === "" || model.name.toLowerCase().includes(window.searchQuery)
+                    property bool isMatch: {
+                        if (window.searchQuery === "") return true;
+                        if (!_m || typeof _m.name !== "string") return false;
+                        return _m.name.toLowerCase().indexOf(window.searchQuery) !== -1;
+                    }
                     property bool isSelected: index === window.selectedAppIndex
 
                     property real _hz: Math.max(0.0, Math.min(1.0, proj.z * window.depthOpacityMult))
@@ -666,8 +861,8 @@ Item {
                                 Layout.alignment: Qt.AlignHCenter
                                 Layout.preferredWidth:  window.acIconSize
                                 Layout.preferredHeight: window.acIconSize
-                                source: model.icon
-                                    ? (model.icon.startsWith("/") ? "file://" + model.icon : "image://icon/" + model.icon)
+                                source: appNode._icon
+                                    ? (appNode._icon.startsWith("/") ? "file://" + appNode._icon : "image://icon/" + appNode._icon)
                                     : "image://icon/application-x-executable"
                                 fillMode: Image.PreserveAspectFit
                                 asynchronous: true
@@ -686,7 +881,7 @@ Item {
                                     anchors.fill: parent
                                     anchors.leftMargin:  window._s3
                                     anchors.rightMargin: window._s3
-                                    text: model.name
+                                    text: appNode._name
                                     font.family: "JetBrains Mono"
                                     font.pixelSize: window.acFontSize
                                     font.weight: Font.DemiBold
@@ -967,49 +1162,7 @@ Item {
                 placeholderTextColor: window.polyOverlay0
                 verticalAlignment: TextInput.AlignVCenter
 
-                onTextChanged: window.handleSearch(text)
-
-                Keys.onDownPressed: {
-                    for (let i = window.selectedAppIndex + 1; i < appModel.count; i++) {
-                        if (appModel.get(i).name.toLowerCase().includes(window.searchQuery)) {
-                            window.selectedAppIndex = i;
-                            window.selectedAppName  = appModel.get(i).name;
-                            window.selectedAppIcon  = appModel.get(i).icon || "";
-                            window.selectedAppExec  = appModel.get(i).exec || "";
-                            window.centerOnApp(i);
-                            window.sphereZoom = sphereSelectedZoom;
-                            break;
-                        }
-                    }
-                    event.accepted = true;
-                }
-                Keys.onUpPressed: {
-                    for (let i = window.selectedAppIndex - 1; i >= 0; i--) {
-                        if (appModel.get(i).name.toLowerCase().includes(window.searchQuery)) {
-                            window.selectedAppIndex = i;
-                            window.selectedAppName  = appModel.get(i).name;
-                            window.selectedAppIcon  = appModel.get(i).icon || "";
-                            window.selectedAppExec  = appModel.get(i).exec || "";
-                            window.centerOnApp(i);
-                            window.sphereZoom = sphereSelectedZoom;
-                            break;
-                        }
-                    }
-                    event.accepted = true;
-                }
-                Keys.onReturnPressed: {
-                    if (window.selectedAppIndex >= 0 && window.selectedAppIndex < appModel.count) {
-                        window.launchApp(
-                            appModel.get(window.selectedAppIndex).name,
-                            appModel.get(window.selectedAppIndex).exec
-                        );
-                    }
-                    event.accepted = true;
-                }
-                Keys.onEscapePressed: {
-                    closeSequence.start();
-                    event.accepted = true;
-                }
+                onTextChanged: window.handleSearchInput(text)
             }
 
             Text {
