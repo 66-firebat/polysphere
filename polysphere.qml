@@ -211,6 +211,14 @@ Item {
                 window.visible = true;
             }
         }
+
+        // One-shot open: only opens if closed, no-op if already open.
+        // Use this in Hyprland's Alt+Tab bind to prevent repeated toggling.
+        function open(): void {
+            if (!window.visible) {
+                window.visible = true;
+            }
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════

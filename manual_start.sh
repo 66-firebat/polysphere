@@ -2,7 +2,19 @@
 # PolySphere Manual Test Launcher
 # Starts the daemon and Quickshell overlay for manual testing.
 # After running this script, open the overlay via:
-#   quickshell ipc -p shell.qml call polysphere toggle
+#   quickshell ipc -p /run/media/fireshark/FORGE_CELL/data/github_repositories/hypr-comp/shell.qml call polysphere toggle
+#
+# IMPORTANT: Use "open" not "toggle" for the Hyprland bind, otherwise
+# every Tab press while holding Alt will open/close the overlay repeatedly.
+# Add this to ~/.config/hypr/keymaps.lua:
+#   hl.bind("ALT + Tab", function()
+#       hl.dispatch(hl.dsp.exec_cmd(
+#           "quickshell ipc -p /run/media/fireshark/FORGE_CELL/data/github_repositories/hypr-comp/shell.qml call polysphere open"
+#       ))
+#   end
+#
+# Then when the overlay is open, Tab cycles apps (QML handles it),
+# and releasing Alt activates the selected app.
 
 set -euo pipefail
 
@@ -49,7 +61,10 @@ echo ""
 echo "═══ Ready for testing ═══"
 echo ""
 echo "To open the overlay, run in another terminal:"
-echo "  quickshell ipc -p shell.qml call polysphere toggle"
+echo "  quickshell ipc -p /run/media/fireshark/FORGE_CELL/data/github_repositories/hypr-comp/shell.qml call polysphere open"
+echo ""
+echo "To close it:"
+echo "  quickshell ipc -p /run/media/fireshark/FORGE_CELL/data/github_repositories/hypr-comp/shell.qml call polysphere toggle
 echo ""
 echo "To close everything when done:"
 echo "  pkill -f quickshell; pkill -f guile.*daemon; rm -f $SOCKET"
