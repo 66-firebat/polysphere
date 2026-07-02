@@ -67,6 +67,48 @@ This is a D-Bus portal registration warning from the host environment — unrela
 
 ---
 
+## PHASE_2_TESTING
+
+**Phase 2**: Guile Daemon — Unix socket server, MRU list, hyprctl integration, JSON protocol.
+
+**Test runner**: `tests/test_daemon.sh`
+**Run command**: `./tests/test_daemon.sh` (from repo root)
+**Requires**: Guile 3.0.11+, `hyprctl`, Python 3 (for socket test harness)
+
+### Test Cases
+
+| # | Name | Action | Expected Response |
+|---|---|---|---|
+| T1 | Socket opens | Start daemon | Socket file exists at `$XDG_RUNTIME_DIR/polysphere.sock` |
+| T2 | Empty get_mru | Send `{"type":"get_mru"}` | `{"mru":[],"current":null,"selected":null}` |
+| T3 | get_mru with one running app | Activate "firefox", then get_mru | `{"mru":[{"id":"firefox","running":true}],"current":"firefox","selected":"firefox"}` |
+| T4 | get_mru with two running apps | Activate "firefox" then "kitty", get_mru | `{"mru":[{"id":"kitty","running":true},{"id":"firefox","running":true}],"current":"kitty","selected":"firefox"}` |
+| T5 | get_mru with launch targets | One running app, fill from whitelist | Response includes running apps first, then non-running whitelisted apps with `running:false` |
+| T6 | cycle_next | Send `{"type":"cycle_next"}` | Advances cursor through ALL entries (running + non-running) |
+| T7 | cycle_prev | Send `{"type":"cycle_prev"}` | Retreats cursor |
+| T8 | cycle wraps | cycle_next past end | Wraps to index 0 |
+| T9 | activate running app | Send `{"type":"activate","app":"kitty"}` | `{"ok":true}` + app moves to MRU front, `hyprctl dispatch` called |
+| T10 | activate non-running app | Send `{"type":"activate","app":"spotify"}` (not running) | `{"ok":false,"reason":"app is not running","app":"spotify"}` |
+| T11 | activate unknown app | Send `{"type":"activate","app":"nonexistent"}` | `{"ok":false,"reason":"app not in MRU list","app":"nonexistent"}` |
+| T12 | cancel | Send `{"type":"cancel"}` | `{"ok":true}` |
+| T13 | Unknown request | Send `{"type":"bad"}` | `{"error":"unknown request type"}` |
+| T14 | Malformed JSON | Send `not json` | `{"error":"parse error"}` |
+| T15 | MRU maxEntries | Activate > maxEntries apps | List never exceeds limit |
+| T16 | Config overrides | Set maxEntries via config | MRU list respects config value |
+| T17 | Whitelist fill order | get_mru with no running apps | Returns all whitelisted apps in config order with `running:false` |
+| T18 | --help | Run `guile daemon.scm --help` | Prints help and exits |
+
+### Status
+
+```
+Phase 2: Daemon Tests
+  Passed: 0
+  Failed: 0
+  Not yet run
+```
+
+---
+
 ## Test Case Templates
 
 ### Adding a new Phase 1 test

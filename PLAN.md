@@ -2,7 +2,7 @@
 
 ## Overview
 
-An Alt+Tab application switcher with a 3D Fibonacci-sphere interface, built on Quickshell + QML. Spawned running apps appear on a rotating 3D sphere, ordered by Most Recently Used (MRU) recency. A Guile Scheme daemon tracks MRU state and manages window focus via Hyprland IPC.
+An Alt+Tab application switcher with a 3D Fibonacci-sphere interface, built on Quickshell + QML. Running apps appear on a rotating 3D sphere, ordered by Most Recently Used (MRU) recency, with non-running whitelisted apps appended as launch targets. A Guile Scheme daemon tracks MRU state and manages window focus via Hyprland IPC.
 
 ---
 
@@ -39,10 +39,10 @@ An Alt+Tab application switcher with a 3D Fibonacci-sphere interface, built on Q
 3. Script signals QML to open the overlay (e.g., via `kill -USR1` or writing to a status file)
 4. QML overlay opens, sends `{"type": "get_mru"}` to the daemon
 5. Daemon runs `hyprctl clients`, matches window classes to `.desktop` filenames, builds the ranked app list
-6. Daemon responds with `{"mru": ["firefox", "kitty", ...], "current": "firefox", "selected": "kitty"}`
+6. Daemon responds with `{"mru": [{"id": "firefox", "running": true}, {"id": "kitty", "running": true}, ...], "current": "firefox", "selected": "kitty"}`
    - `current` = the app currently focused (most recent)
    - `selected` = the app to highlight (second most recent)
-   - `mru` = full ordered list
+   - `mru` = full ordered list, each entry is an object with `id` (app identifier) and `running` (boolean indicating if the app has an active window)
 7. QML renders the sphere with all MRU apps. `selected` app is highlighted (zoomed/satellite).
 8. User presses **Tab** → QML sends `cycle_next` → daemon returns new `selected`
 9. User presses **Shift+Tab** → QML sends `cycle_prev` → daemon returns new `selected`
@@ -53,12 +53,19 @@ An Alt+Tab application switcher with a 3D Fibonacci-sphere interface, built on Q
 
 ### App Population Logic
 
-When the sphere renders:
-1. Query daemon via `get_mru` for current running apps
-2. Daemon runs `hyprctl clients`, extracts window `class`, maps to `.desktop` filenames
-3. Daemon returns the intersection: running apps ordered by MRU
-4. If `len(mru_running) < totalApps`, fill remaining slots with `whitelistedApps` in config order
-5. Apps not currently running are **not** rendered on the sphere
+The sphere shows a flat ordered list containing **two segments**:
+
+**Segment 1 — Switching targets** (running apps with active windows):
+1. Daemon runs `hyprctl clients`, extracts window `class`, maps to app identifiers
+2. Filter the internal MRU list against the running set, preserving MRU order
+3. These are the apps the user can **Alt+Tab to** immediately
+
+**Segment 2 — Launch targets** (non-running whitelisted apps):
+1. After Segment 1 is built, iterate the `whitelistedApps` list in config order
+2. Any whitelisted app that is **not already in Segment 1** is appended with `running: false`
+3. Stop when `totalApps` is reached
+
+Both segments are combined into a single flat `mru` array in the response. Each entry is tagged with `running: true` or `running: false` so the QML can render them differently (switching target vs launch target).
 
 ---
 
@@ -94,16 +101,21 @@ bind = Alt, Tab, exec, ~/.config/hypr-comp/toggle-launcher.sh
 
 | Request | Response | Side effects |
 |---|---|---|
-| `{"type": "get_mru"}` | `{"mru": [...], "current": "...", "selected": "..."}` | Runs `hyprctl clients` to build alive list |
+| `{"type": "get_mru"}` | `{"mru": [{"id": "...", "running": true}, ...], "current": "...", "selected": "..."}` | Runs `hyprctl clients` to build alive list. Returns enriched entries with running status. |
 | `{"type": "cycle_next"}` | `{"selected": "..."}` | Advances selection cursor forward |
 | `{"type": "cycle_prev"}` | `{"selected": "..."}` | Advances selection cursor backward |
-| `{"type": "activate", "app": "kitty"}` | `{"ok": true}` | Updates MRU order, runs `hyprctl dispatch focuswindow class:kitty` |
+| `{"type": "activate", "app": "kitty"}` | `{"ok": true}` (running) or `{"ok": false, "reason": "app is not running"}` (non-running) | Updates MRU order, runs `hyprctl dispatch focuswindow class:kitty`. Returns error if app is not running or not in MRU list. |
 | `{"type": "cancel"}` | `{"ok": true}` | No-op for daemon |
 
 ### MRU Algorithm:
-- Array of app identifiers (desktop filename without `.desktop`)
+- The MRU list is an in-memory array of app identifiers (desktop filename without `.desktop`)
+- On `get_mru`:
+  1. Run `hyprctl clients -j` to get the set of running apps
+  2. Filter the MRU list against the running set → Segment 1 (switching targets, `running: true`)
+  3. Iterate `whitelistedApps` in config order; any app not already in Segment 1 is appended → Segment 2 (launch targets, `running: false`)
+  4. Truncate the combined list to `totalApps`
+  5. Return enriched objects: `{"id": app, "running": true/false}`
 - On `activate`: move activated app to index 0
-- On `get_mru`: filter MRU list against `hyprctl clients` output, keep order, return alive-only list
 - Limit: `mru.maxEntries` from config (default 20)
 
 ### `hyprctl` usage:
@@ -284,8 +296,9 @@ echo "open" > "$STATUS_FILE"
 | **MRU persistence** | In-memory only (daemon stays alive) | No file I/O, survives as long as the session |
 | **Mouse support** | None | Keyboard-only Alt+Tab switcher |
 | **App matching** | Window class → `.desktop` filename | Reliable mapping via Hyprland's window class field |
-| **Sphere fill logic** | Running apps first, then whitelist | Always shows alive apps; fills empty slots with favories |
+| **Sphere fill logic** | Running apps (MRU) first, then non-running whitelisted apps appended | Switching targets first, launch targets after; both are always visible on the sphere. Non-running apps are decorated differently by QML. |
 | **No search bar** | Removed in Alt+Tab mode | Search bar is for the old app-launcher mode, not for Alt+Tab cycling |
+| **Non-running apps** | Included as launch targets, tagged with `running: false` | Users can see and select non-running favorites; QML will launch them instead of focusing (Phase 3+). Cursor cycles through all entries including non-running. |
 
 ---
 
