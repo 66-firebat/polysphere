@@ -615,7 +615,10 @@ int main(int argc, char *argv[]) {
             }
             char ch;
             ssize_t r = read(conn_fd, &ch, 1);
-            if (r <= 0) {
+            if (r < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+                /* False positive from poll() — no data yet */
+                ;
+            } else if (r <= 0) {
 disconnect:
                 if (is_grabbed) {
                     ioctl(fd, EVIOCGRAB, (void*)0);

@@ -320,12 +320,14 @@ Item {
             onConnectedChanged: {
                 window.kbdLog("SOCKET connected=" + connected);
                 if (connected) {
-                    // Always send grab on connect. kbd-capture handles
-                    // duplicate grabs harmlessly (EVIOCGRAB is idempotent).
-                    // When the socket disconnects, kbd-capture auto-ungrabs.
-                    this.write("grab\n");
-                    this.flush();
-                    window.kbdLog("SOCKET sent grab");
+                    // Debounce: only grab if not already grabbed recently
+                    var now = Date.now();
+                    if (!window._lastGrabTime || now - window._lastGrabTime > 500) {
+                        window._lastGrabTime = now;
+                        this.write("grab\n");
+                        this.flush();
+                        window.kbdLog("SOCKET sent grab");
+                    }
                 }
             }
             parser: SplitParser {
@@ -490,11 +492,8 @@ Item {
     // Close the overlay — plays exit animation, then hides
     function closeOverlay() {
         kbdLog("CLOSE overlay");
-        // Tell kbd-capture to ungrab before closing
-        // (the Socket handler is a child of SocketServer)
-        // We can't easily reference the handler Socket here, so we send
-        // ungrab via the kbdServer's active connections via the socket.
-        kbdServer.active = false;  // This disconnects all sockets
+        window._openingOverlay = false;  // Reset guard so overlay can reopen
+        kbdServer.active = false;
         window.kbdActive = false;
         searchTimer.running = false;
         closeSequence.start();
@@ -932,6 +931,7 @@ Item {
 
         if (entry.running) {
             // Focus running app, then hide overlay
+            window._openingOverlay = false;  // Reset guard
             var cmd = "echo '" + JSON.stringify({type: "activate", app: entry.id}).replace(/'/g, "'\\''") + "' | nc -U " + daemonSocket;
             Quickshell.execDetached(["bash", "-c", cmd]);
             window.visible = false;
