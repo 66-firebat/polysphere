@@ -284,7 +284,11 @@ Item {
                 // First Alt+Tab: open overlay, start tracking Alt
                 window.altHeld = true;
                 window.tabWasPressed = true;
-                // Note: submap entry is done by Hyprland's ALT+Tab bind handler,
+                // Clear any stale submap before opening. This is a proactive
+                // cleanup in case a previous close path didn't properly reset.
+                debugLog("SUBMAP", "Clearing stale submap before open (cycle)");
+                Quickshell.execDetached(["hyprctl", "dispatch", "submap", "reset"]);
+                // Submap entry is done by Hyprland's ALT+Tab bind handler,
                 // NOT by execDetached here. See keymaps.lua for the submap enter.
                 // Must make PanelWindow visible first so QML scene processes changes
                 if (window.panelWindow) {
@@ -788,17 +792,16 @@ Item {
         id: closeSequence
         NumberAnimation { target: window; property: "introPhase"; to: 0.0; duration: window.animExitFade; easing.type: Easing.OutQuint }
         ScriptAction { script: { 
+            // Reset submap FIRST while QML engine is still processing this
+            // animation. Done before hiding the PanelWindow so execDetached
+            // reliably spawns the hyprctl process.
+            debugLog("SUBMAP", "Resetting submap (closeSequence, before hide)");
+            Quickshell.execDetached(["hyprctl", "dispatch", "submap", "reset"]);
+            // Then hide overlay
             window.visible = false;
-            // Hide the PanelWindow so it stops intercepting mouse/keyboard events
             if (window.panelWindow) {
                 window.panelWindow.visible = false;
             }
-            // Safety net: reset submap on ANY close-path completion.
-            // The primary reset is done by keymaps.lua submap handlers BEFORE
-            // their IPC calls (synchronous hl.dispatch), but this execDetached
-            // covers the toggle() path and any other non-submap close paths.
-            debugLog("SUBMAP", "Safety net: dispatching submap reset via execDetached (closeSequence)");
-            Quickshell.execDetached(["hyprctl", "dispatch", "submap", "reset"]);
             debugState("after-close");
         } }
     }
@@ -934,17 +937,17 @@ Item {
             // daemonProcess wouldn't work here because its parent is about to be hidden.
             var cmd = "echo '" + JSON.stringify({type: "activate", app: entry.id}).replace(/'/g, "'\\''") + "' | nc -U " + daemonSocket;
             Quickshell.execDetached(["bash", "-c", cmd]);
+            // Reset submap FIRST while QML engine is fully active.
+            // execDetached spawns an independent process, so even if the engine
+            // pauses after hiding the PanelWindow, the hyprctl command is already
+            // running. Doing this AFTER hide was unreliable.
+            debugLog("SUBMAP", "Resetting submap (triggerActivate, before hide)");
+            Quickshell.execDetached(["hyprctl", "dispatch", "submap", "reset"]);
             // Then hide overlay (no animation, immediate)
             window.visible = false;
             if (window.panelWindow) {
                 window.panelWindow.visible = false;
             }
-            // Safety net: reset submap via execDetached. The primary reset
-            // is done by keymaps.lua's Alt release handler (synchronous
-            // hl.dispatch BEFORE the commit IPC), but this execDetached is
-            // belt-and-suspenders in case the Hyprland-side reset has a race.
-            debugLog("SUBMAP", "Safety net: dispatching submap reset via execDetached");
-            Quickshell.execDetached(["hyprctl", "dispatch", "submap", "reset"]);
             debugState("after-activate-running");
         } else {
             Quickshell.execDetached(["bash", "-c", entry.exec || entry.id]);
