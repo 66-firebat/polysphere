@@ -216,13 +216,12 @@ Item {
         // before QML's Keys.onPressed can see it).
         // First press opens overlay; subsequent presses cycle forward.
         function cycle(): void {
-            // IPC fallback — opens overlay. Sets tabWasPressed because
-            // kbd-capture may not have started yet (async startup delay).
-            // The socket handler no longer resets tabWasPressed, so this
-            // won't cause premature activation.
+            // IPC fallback — opens overlay. Does NOT set tabWasPressed.
+            // Only the Tab cycling handler should set it, so releasing Alt
+            // on the first open goes back to the previous app normally.
             if (!window.visible) {
+                window._openingOverlay = false;
                 window.altHeld = true;
-                window.tabWasPressed = true;
                 if (window.panelWindow) {
                     window.panelWindow.visible = true;
                 }
@@ -319,6 +318,7 @@ Item {
         handler: Socket {
             onConnectedChanged: {
                 window.kbdLog("SOCKET connected=" + connected);
+                window.kbdActive = connected;
                 if (connected) {
                     this.write("grab\n");
                     this.flush();
@@ -349,9 +349,10 @@ Item {
         // --- Alt key tracking ---
         if (evt.key === "alt_left" || evt.key === "alt_right") {
             window.altHeld = (evt.value === 1);
-            // Only activate if overlay is still visible — prevents phantom
-            // activation after close (e.g., Escape + Alt release)
-            if (!window.altHeld && window.tabWasPressed && window.visible) {
+            // Always activate on Alt release when overlay is visible.
+            // tabWasPressed is not needed — user always holds Alt to search,
+            // so Alt release always means "I'm done — activate."
+            if (!window.altHeld && window.visible) {
                 triggerActivate();
             }
             return;
@@ -373,9 +374,9 @@ Item {
                 if (window.visible) {
                     cycleSelection(shift ? -1 : 1);
                 } else {
-                    // First Alt+Tab: open overlay
+                    // First Alt+Tab: open overlay (don't set tabWasPressed yet)
+                    window._openingOverlay = false;
                     window.altHeld = true;
-                    window.tabWasPressed = true;
                     if (window.panelWindow) window.panelWindow.visible = true;
                     window.visible = true;
                 }
@@ -433,7 +434,8 @@ Item {
     // Load app database on startup
     Component.onCompleted: {
         loadAppDatabase();
-        startKbdCapture();
+        // Socket server always active — kbd-capture is started per-overlay in openOverlay()
+        kbdServer.active = true;
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -452,9 +454,9 @@ Item {
         window._openingOverlay = true;
 
         window.kbdLog("OPEN overlay");
-        window.kbdActive = true;
-        // Activate SocketServer to accept kbd-capture connection
-        kbdServer.active = true;
+        // Ensure kbd-capture is running (connects to always-active socket)
+        startKbdCapture();
+        // kbdActive will be set by onConnectedChanged when kbd-capture connects
 
         // Make the PanelWindow visible so it can receive keyboard/mouse events
         if (panelWindow) {
@@ -488,8 +490,13 @@ Item {
     // Close the overlay — plays exit animation, then hides
     function closeOverlay() {
         kbdLog("CLOSE overlay");
-        window._openingOverlay = false;  // Reset guard so overlay can reopen
-        kbdServer.active = false;
+        window._openingOverlay = false;
+        window.visible = false;
+        if (window.panelWindow) {
+            window.panelWindow.visible = false;
+        }
+        // IMMEDIATELY kill kbd-capture — no delays, no animations, no grab leakage
+        Quickshell.execDetached(["bash", "-c", "pkill -9 -f 'kbd-capture' 2>/dev/null"]);
         window.kbdActive = false;
         searchTimer.running = false;
         closeSequence.start();
@@ -814,12 +821,8 @@ Item {
     SequentialAnimation {
         id: closeSequence
         NumberAnimation { target: window; property: "introPhase"; to: 0.0; duration: window.animExitFade; easing.type: Easing.OutQuint }
-        ScriptAction { script: { 
-            window.visible = false;
-            // Hide the PanelWindow so it stops intercepting mouse/keyboard events
-            if (window.panelWindow) {
-                window.panelWindow.visible = false;
-            }
+        ScriptAction { script: {
+            // visible already set to false by closeOverlay() — nothing to do here
         } }
     }
 
@@ -875,10 +878,10 @@ Item {
         // kbd-capture handles all keys when active
         if (kbdActive) return;
 
-        // FALLBACK: Alt released
+        // FALLBACK: Alt released — always activate when visible
         if (event.key === Qt.Key_Alt) {
             altHeld = false;
-            if (tabWasPressed) {
+            if (window.visible) {
                 triggerActivate();
             }
             event.accepted = true;
