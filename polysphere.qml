@@ -793,10 +793,12 @@ Item {
             if (window.panelWindow) {
                 window.panelWindow.visible = false;
             }
-            // Submap reset is handled by Hyprland's submap handlers
-            // (Escape → cancel, Alt release → commit), NOT by execDetached here.
-            // execDetached for submap reset is unreliable when PanelWindow is
-            // about to go invisible — use synchronous hl.dispatch in keymaps.lua.
+            // Safety net: reset submap on ANY close-path completion.
+            // The primary reset is done by keymaps.lua submap handlers BEFORE
+            // their IPC calls (synchronous hl.dispatch), but this execDetached
+            // covers the toggle() path and any other non-submap close paths.
+            debugLog("SUBMAP", "Safety net: dispatching submap reset via execDetached (closeSequence)");
+            Quickshell.execDetached(["hyprctl", "dispatch", "submap", "reset"]);
             debugState("after-close");
         } }
     }
@@ -923,11 +925,12 @@ Item {
             if (window.panelWindow) {
                 window.panelWindow.visible = false;
             }
-            // Submap reset is handled by Hyprland's submap Alt release handler
-            // (synchronous hl.dispatch, not execDetached). The submap captures
-            // Alt release BEFORE it reaches QML and resets the submap via
-            // hl.dispatch(hl.dsp.submap("reset")), which is always reliable.
-            debugLog("SUBMAP", "Submap reset delegated to keymaps.lua Alt release handler");
+            // Safety net: reset submap via execDetached. The primary reset
+            // is done by keymaps.lua's Alt release handler (synchronous
+            // hl.dispatch BEFORE the commit IPC), but this execDetached is
+            // belt-and-suspenders in case the Hyprland-side reset has a race.
+            debugLog("SUBMAP", "Safety net: dispatching submap reset via execDetached");
+            Quickshell.execDetached(["hyprctl", "dispatch", "submap", "reset"]);
             debugState("after-activate-running");
         } else {
             Quickshell.execDetached(["bash", "-c", entry.exec || entry.id]);
