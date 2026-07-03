@@ -216,21 +216,17 @@ Item {
         // before QML's Keys.onPressed can see it).
         // First press opens overlay; subsequent presses cycle forward.
         function cycle(): void {
+            // IPC fallback — opens overlay. Sets tabWasPressed because
+            // kbd-capture may not have started yet (async startup delay).
+            // The socket handler no longer resets tabWasPressed, so this
+            // won't cause premature activation.
             if (!window.visible) {
-                // First Alt+Tab: open overlay, start tracking Alt
                 window.altHeld = true;
                 window.tabWasPressed = true;
                 if (window.panelWindow) {
                     window.panelWindow.visible = true;
                 }
                 window.visible = true;
-            } else {
-                // Subsequent Tab while holding Alt: cycle to next app
-                window.tabWasPressed = true;
-                if (appModel.count > 0) {
-                    var nextIndex = (window.selectedAppIndex + 1 + appModel.count) % appModel.count;
-                    window.selectByIndex(nextIndex);
-                }
             }
         }
     }
@@ -254,7 +250,8 @@ Item {
     property int savedSelectionIndex: -1
     property bool altHeld: false
     property bool tabWasPressed: false
-    property bool _openingOverlay: false  // guard to prevent re-entrant openOverlay()
+    property bool kbdActive: false          // true when kbd-capture is handling keys
+    property bool _openingOverlay: false    // guard to prevent re-entrant openOverlay()
 
     // Fuse.js search options
     readonly property var fuseOptions: ({
@@ -300,6 +297,126 @@ Item {
         }
     }
 
+    // ────────────────────────────────────────────────────────────────
+    // kbd-capture: raw evdev keyboard capture process
+    // ────────────────────────────────────────────────────────────────
+
+    // kbd-capture binary path (relative to repo root, or deployed path)
+    readonly property string kbdCapturePath: "/run/media/fireshark/FORGE_CELL/data/github_repositories/hypr-comp/lib/kbd-capture"
+
+    // SocketServer — listens for kbd-capture to connect and stream JSON events.
+    // SplitParser fires onRead once per complete JSON line (delimiter = \n).
+    property int _kbdLogSeq: 0
+    function kbdLog(msg) {
+        window._kbdLogSeq = window._kbdLogSeq + 1;
+        console.log("KBDLOG[" + window._kbdLogSeq + "] " + msg);
+    }
+
+    SocketServer {
+        id: kbdServer
+        active: false
+        path: "/tmp/polysphere-kbd.sock"
+        handler: Socket {
+            onConnectedChanged: {
+                window.kbdLog("SOCKET connected=" + connected);
+                if (connected) {
+                    // Always send grab on connect. kbd-capture handles
+                    // duplicate grabs harmlessly (EVIOCGRAB is idempotent).
+                    // When the socket disconnects, kbd-capture auto-ungrabs.
+                    this.write("grab\n");
+                    this.flush();
+                    window.kbdLog("SOCKET sent grab");
+                }
+            }
+            parser: SplitParser {
+                onRead: (message) => {
+                    try {
+                        var evt = JSON.parse(message);
+                        window.kbdLog("EVT " + evt.key + "=" + evt.value + " alt=" + (evt.mods && evt.mods.alt) + " shift=" + (evt.mods && evt.mods.shift));
+                        handleKbdEvent(evt);
+                    } catch(e) {
+                        window.kbdLog("PE: " + message);
+                    }
+                }
+            }
+        }
+    }
+
+    // Handle a key event from kbd-capture
+    function handleKbdEvent(evt) {
+        window.kbdLog("HANDLE key=" + evt.key + " val=" + evt.value + " alt=" + (evt.mods && evt.mods.alt) +
+                     " vis=" + window.visible + " tabPressed=" + window.tabWasPressed + " altHeld=" + window.altHeld);
+        var alt = evt.mods && evt.mods.alt;
+        var shift = evt.mods && evt.mods.shift;
+
+        // --- Alt key tracking ---
+        if (evt.key === "alt_left" || evt.key === "alt_right") {
+            window.altHeld = (evt.value === 1);
+            if (!window.altHeld && window.tabWasPressed) {
+                // Alt released after Tab was pressed → activate
+                triggerActivate();
+            }
+            return;
+        }
+
+        // --- Ignore key releases for action keys (press-only) ---
+        if (evt.value !== 1) return;
+
+        // --- Escape ---
+        if (evt.key === "esc") {
+            handleEscape();
+            return;
+        }
+
+        // --- Tab/Backtab (cycle) — only on PRESS (value=1), not release or repeat
+        if (evt.key === "tab" && evt.value === 1) {
+            if (alt) {
+                window.tabWasPressed = true;
+                if (window.visible) {
+                    cycleSelection(shift ? -1 : 1);
+                } else {
+                    // First Alt+Tab: open overlay
+                    window.altHeld = true;
+                    window.tabWasPressed = true;
+                    if (window.panelWindow) window.panelWindow.visible = true;
+                    window.visible = true;
+                }
+            }
+            return;
+        }
+
+        // --- Letter/digit keys (search, only when overlay visible) ---
+        if (window.visible && evt.key.length === 1 && evt.key.match(/[a-zA-Z0-9]/)) {
+            searchInput.text += evt.key;
+            searchInput.forceActiveFocus();
+            return;
+        }
+
+        // --- Backspace (search) ---
+        if (window.visible && evt.key === "backspace") {
+            searchInput.text = searchInput.text.slice(0, -1);
+            return;
+        }
+    }
+
+    // Start kbd-capture (runs continuously as long as QML is alive)
+    function startKbdCapture() {
+        console.log("POLYSPHERE: Starting kbd-capture...");
+        kbdLog("START kbd-capture");
+        var toggleStr = (cfg.keybindings?.toggle || "Alt+Tab");
+        var cancelStr = (cfg.keybindings?.cancel || "Escape");
+        var nextStr = (cfg.keybindings?.cycleNext || "Tab");
+        var prevStr = (cfg.keybindings?.cyclePrevious || "Shift+Tab");
+        var kbdArgs = "--connect /tmp/polysphere-kbd.sock"
+            + " --toggle \"" + toggleStr + "\""
+            + " --cancel \"" + cancelStr + "\""
+            + " --cycle-next \"" + nextStr + "\""
+            + " --cycle-prev \"" + prevStr + "\"";
+        Quickshell.execDetached(["bash", "-c",
+            kbdCapturePath + " " + kbdArgs + " > /tmp/kbd-capture.log 2>&1 &"
+        ]);
+    }
+
     // Fetch all installed apps from daemon and build Fuse.js index
     function loadAppDatabase() {
         daemonRequest("get_app_db", {}, function(response) {
@@ -316,7 +433,10 @@ Item {
     }
 
     // Load app database on startup
-    Component.onCompleted: loadAppDatabase()
+    Component.onCompleted: {
+        loadAppDatabase();
+        startKbdCapture();
+    }
 
     // ═══════════════════════════════════════════════════════════════
     // Overlay Lifecycle
@@ -332,6 +452,11 @@ Item {
             return;
         }
         window._openingOverlay = true;
+
+        window.kbdLog("OPEN overlay");
+        window.kbdActive = true;
+        // Activate SocketServer to accept kbd-capture connection
+        kbdServer.active = true;
 
         // Make the PanelWindow visible so it can receive keyboard/mouse events
         if (panelWindow) {
@@ -364,6 +489,13 @@ Item {
 
     // Close the overlay — plays exit animation, then hides
     function closeOverlay() {
+        kbdLog("CLOSE overlay");
+        // Tell kbd-capture to ungrab before closing
+        // (the Socket handler is a child of SocketServer)
+        // We can't easily reference the handler Socket here, so we send
+        // ungrab via the kbdServer's active connections via the socket.
+        kbdServer.active = false;  // This disconnects all sockets
+        window.kbdActive = false;
         searchTimer.running = false;
         closeSequence.start();
     }
@@ -713,18 +845,21 @@ Item {
     readonly property int searchTimerDuration: cfg.search?.delayMs ?? 500
 
     // ═══════════════════════════════════════════════════════════════
-    // Keyboard Handling
+    // Keyboard Handling (kbd-capture primary, QML Keys as fallback)
     // ═══════════════════════════════════════════════════════════════
 
     Keys.priority: Keys.BeforeItem
     Keys.onPressed: (event) => {
-        // Alt pressed — start tracking
+        // kbd-capture handles all keys when active
+        if (kbdActive) return;
+
+        // FALLBACK: Alt pressed
         if (event.key === Qt.Key_Alt && !event.isAutoRepeat) {
             altHeld = true;
             event.accepted = true;
         }
 
-        // Tab/Shift+Tab with Alt — cycle through visible appModel (not daemon MRU)
+        // FALLBACK: Tab/Shift+Tab with Alt
         if ((event.key === Qt.Key_Tab || event.key === Qt.Key_Backtab) && (event.modifiers & Qt.AltModifier)) {
             tabWasPressed = true;
             if (appModel.count > 0) {
@@ -734,20 +869,18 @@ Item {
             event.accepted = true;
         }
 
-        // Escape — tiered handler: clear search first, then close
+        // FALLBACK: Escape
         if (event.key === Qt.Key_Escape) {
             handleEscape();
             event.accepted = true;
         }
-
-        // Note: Letter/digit keys are intentionally NOT handled here.
-        // Hyprland intercepts Alt+<key> combinations before QML sees them.
-        // Instead, release Alt first, then type — the search bar is
-        // already focused (forceActiveFocus in openOverlay).
     }
 
     Keys.onReleased: (event) => {
-        // Alt released — activate the selected app if Tab was pressed
+        // kbd-capture handles all keys when active
+        if (kbdActive) return;
+
+        // FALLBACK: Alt released
         if (event.key === Qt.Key_Alt) {
             altHeld = false;
             if (tabWasPressed) {
@@ -771,6 +904,7 @@ Item {
 
     // Cycle selection forward (+1) or backward (-1) through the current appModel
     function cycleSelection(direction) {
+        window.kbdLog("CYCLE dir=" + direction + " beforeIdx=" + selectedAppIndex + " count=" + appModel.count);
         if (appModel.count === 0) return;
         var nextIndex = (selectedAppIndex + direction + appModel.count) % appModel.count;
         selectByIndex(nextIndex);
@@ -790,30 +924,36 @@ Item {
     // Activate the currently selected app — focus if running, launch if not
     function triggerActivate() {
         var idx = window.selectedAppIndex;
-        if (idx < 0 || idx >= appModel.count) return;
+        window.kbdLog("ACTIVATE idx=" + idx + " count=" + appModel.count);
+        if (idx < 0 || idx >= appModel.count) { window.kbdLog("ACTIVATE_SKIP bad idx"); return; }
         var entry = appModel.get(idx);
-        if (!entry) return;
+        if (!entry) { window.kbdLog("ACTIVATE_SKIP no entry"); return; }
+        window.kbdLog("ACTIVATE app=" + entry.id + " running=" + entry.running);
 
         if (entry.running) {
-            // Use execDetached so the command runs INDEPENDENTLY of QML visibility.
-            // daemonProcess wouldn't work here because its parent is about to be hidden.
+            // Focus running app, then hide overlay
             var cmd = "echo '" + JSON.stringify({type: "activate", app: entry.id}).replace(/'/g, "'\\''") + "' | nc -U " + daemonSocket;
             Quickshell.execDetached(["bash", "-c", cmd]);
-            // Then hide overlay (no animation, immediate)
             window.visible = false;
             if (window.panelWindow) {
                 window.panelWindow.visible = false;
             }
         } else {
+            // Launch and track non-running app, then focus it
             Quickshell.execDetached(["bash", "-c", entry.exec || entry.id]);
             daemonRequest("track_launch", {app: entry.id}, function(r) {});
+            // Also send activate to focus the app once it launches
+            var cmd = "echo '" + JSON.stringify({type: "activate", app: entry.id}).replace(/'/g, "'\\''") + "' | nc -U " + daemonSocket;
+            Quickshell.execDetached(["bash", "-c", cmd]);
             closeOverlay();
         }
     }
 
     // Tiered Escape: clear search first, then close overlay
     function handleEscape() {
+        window.kbdLog("ESCAPE searchLen=" + searchInput.text.length);
         if (searchInput.text.length > 0) {
+            // Tier 1: Clear search, restore full sphere
             searchInput.text = "";
             searchQuery = "";
             searchTimer.running = false;
@@ -821,9 +961,10 @@ Item {
                 restoreFullSphere();
             }
         } else {
-            daemonRequest("cancel", {}, function(r) {
-                closeOverlay();
-            });
+            // Tier 2: Close overlay immediately
+            window.kbdLog("ESCAPE closing overlay");
+            closeOverlay();
+            daemonRequest("cancel", {}, function(r) {});
         }
     }
 

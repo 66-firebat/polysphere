@@ -6,6 +6,14 @@ This file contains all **[MANUAL]** tests for Phase 3. You perform these on your
 
 ## How to Run
 
+### Prerequisites
+
+- You **must** be in the `input` user group for kbd-capture to work:
+  ```bash
+  groups $USER  # verify 'input' appears
+  ```
+- No Hyprland keybinds needed — kbd-capture intercepts keys directly from the kernel
+
 ### Start (one terminal)
 
 ```bash
@@ -13,27 +21,11 @@ cd /run/media/fireshark/FORGE_CELL/data/github_repositories/hypr-comp
 ./manual_start.sh
 ```
 
-### Open overlay (second terminal, or Hyprland keybind)
+### Open overlay
 
-Use `cycle` — first call opens, subsequent calls cycle forward.
-```bash
-quickshell ipc -p /run/media/fireshark/FORGE_CELL/data/github_repositories/hypr-comp/shell.qml call polysphere cycle
-```
+The overlay opens when you press **Alt+Tab** (handled by kbd-capture). No IPC command needed.
 
-### Keybind for Hyprland
-
-Hyprland intercepts Alt+Tab before QML can see the key event, so cycling must go through IPC. Use `cycle`:
-
-Add to `~/.config/hypr/keymaps.lua`:
-```lua
-hl.bind("ALT + Tab", function()
-    hl.dispatch(hl.dsp.exec_cmd(
-        "quickshell ipc -p /run/media/fireshark/FORGE_CELL/data/github_repositories/hypr-comp/shell.qml call polysphere cycle"
-    ))
-end)
-```
-
-### Clean up when done
+### Close everything when done
 
 ```bash
 pkill -f quickshell; pkill -f guile.*daemon; rm -f /run/user/1000/polysphere.sock
@@ -41,7 +33,153 @@ pkill -f quickshell; pkill -f guile.*daemon; rm -f /run/user/1000/polysphere.soc
 
 ---
 
-## Test A — Overlay Opens on Alt+Tab
+## kbd-capture Validation Tests
+
+These tests verify that kbd-capture is working correctly — intercepting keys before Hyprland, and forwarding them to QML.
+
+---
+
+### Test K0 — kbd-capture Process Starts
+
+**Objective:** Verify kbd-capture starts when the overlay opens and stops when it closes.
+
+**Sequence:**
+1. `./manual_start.sh`
+2. Press and hold **Alt**, press **Tab** once → overlay opens
+3. Release **Alt** (or press Escape to close)
+
+**Report:**
+```
+Q1: Did you see any kbd-related errors in the console output?
+Q2: Did the overlay respond to Alt+Tab (proving kbd-capture is running)?
+```
+
+---
+
+### Test K1 — Alt+Letter Reaches Search (Not Hyprland)
+
+**Objective:** Verify keys typed while holding Alt go to the search bar instead of triggering Hyprland binds (e.g., Alt+F should NOT fullscreen).
+
+**Known Hyprland binds that should NOT fire:**
+- `Alt+F` would normally fullscreen → should type "f" in search instead
+- `Alt+J` would normally focus down → should type "j" in search instead
+- `Alt+H` would normally focus left → should type "h" in search instead
+
+**Sequence:**
+1. Hold **Alt**, press **Tab** → overlay opens
+2. While still holding Alt, type **"fi"**
+3. Wait ~1 second (debounce timer)
+4. Observe the sphere
+
+**Report:**
+```
+Q1: Did typing "fi" filter the sphere to show only matching apps?
+Q2: Did any Hyprland keybind fire during step 2 (e.g., window fullscreened, focus moved)?
+Q3: How many apps are shown after filtering?
+Q4: Did the search bar show the text "fi"?
+```
+
+---
+
+### Test K2 — Alt+All Letters Work for Search
+
+**Objective:** Verify various Alt+letter combinations reach search without interference.
+
+**Sequence:**
+1. Hold **Alt**, press **Tab** → overlay opens
+2. While still holding Alt, type **"firefox"** (all 7 letters)
+3. Wait ~1 second
+4. Observe
+
+**Report:**
+```
+Q1: Did the text "firefox" appear in the search bar?
+Q2: Did the sphere filter to show Firefox?
+Q3: Did any Hyprland bind fire during typing (Alt+F, Alt+I, Alt+R, etc.)?
+```
+
+---
+
+### Test K3 — Alt Key Tracking (Press + Release)
+
+**Objective:** Verify kbd-capture correctly tracks Alt state for activation.
+
+**Sequence:**
+1. Hold **Alt**, press **Tab** → overlay opens
+2. While still holding Alt, press **Tab** 2-3 times → cycle through apps
+3. Release **Alt**
+4. Observe
+
+**Report:**
+```
+Q1: Did each Tab press cycle to the next app while Alt was held?
+Q2: Did releasing Alt activate the selected app?
+Q3: Did the overlay close after activation?
+```
+
+---
+
+### Test K4 — Search + Backspace
+
+**Objective:** Verify Backspace works for correcting search queries while holding Alt.
+
+**Sequence:**
+1. Hold **Alt**, press **Tab** → overlay opens
+2. Type **"fir"** → sphere should filter to "fir" matches
+3. Press **Backspace** once → text becomes "fi"
+4. Wait ~1 second
+5. Observe
+
+**Report:**
+```
+Q1: Did "fir" filter the sphere?
+Q2: After Backspace, did the search text change to "fi"?
+Q3: Did the sphere re-filter to show "fi" matches?
+```
+
+---
+
+### Test K5 — Escape While Holding Alt
+
+**Objective:** Verify Escape closes the overlay even when Alt is still held.
+
+**Sequence:**
+1. Hold **Alt**, press **Tab** → overlay opens
+2. While still holding Alt, press **Escape**
+3. Observe
+
+**Report:**
+```
+Q1: Did the overlay close?
+Q2: Did the window that was focused before Alt+Tab remain focused?
+```
+
+---
+
+### Test K6 — kbd-capture Stops When Overlay Closes
+
+**Objective:** Verify the keyboard returns to normal after closing the overlay.
+
+**Sequence:**
+1. Hold **Alt**, press **Tab** → overlay opens
+2. Press **Escape** → overlay closes
+3. Try typing normally in another app (e.g., press **Alt+F**)
+
+**Report:**
+```
+Q1: After closing the overlay, does typing work normally in other apps?
+Q2: Does Alt+F trigger Hyprland's fullscreen bind (as expected when overlay is closed)?
+```
+
+---
+
+## Original Alt+Tab Flow Tests
+
+These are the original tests from the initial design. They now work through kbd-capture instead of IPC.
+
+---
+
+### Test A — Overlay Opens on Alt+Tab
 
 **Objective:** Verify the overlay appears with the 3D sphere when Alt+Tab is pressed.
 

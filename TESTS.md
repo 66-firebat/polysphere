@@ -266,39 +266,193 @@ POLYSPHERE: Config loaded successfully. Stopping poll.
 
 ---
 
-## Test Case Templates
+## PHASE_3_SOCKET_TESTING
 
-### Adding a new Phase 1 test
+**Phase 3 — SocketServer + SplitParser Integration.**
 
-```bash
-# 1. Create test config
-cat > tests/config_custom.json << 'EOF'
-{
-  "appearance": { "baseSphereRadius": 500 },
-  "sphere": { "selectedZoom": 2.5 }
-}
-EOF
+These tests validate that kbd-capture connects to QML's SocketServer and streams JSON events through SplitParser.onRead.
 
-# 2. Compute expected
-python3 -c "
-import json
-from copy import deepcopy
-def deep_merge(d, o):
-    for k, v in o.items():
-        if k in d and isinstance(d[k], dict) and isinstance(v, dict):
-            deep_merge(d[k], v)
-        else:
-            d[k] = v
-with open('polysphere.json') as f:
-    merged = deepcopy(json.load(f))
-with open('tests/config_custom.json') as f:
-    deep_merge(merged, json.load(f))
-print(json.dumps(merged, indent=2))
-" > /tmp/expected.json
+**Requires:** `kbd-capture` built (`make`), `input` group membership, Hyprland session.
 
-# 3. Run test
-POLYSPHERE_CONFIG=tests/config_custom.json quickshell -p shell.qml &
-sleep 2
-kill $!
-diff /tmp/polysphere-config-debug.json /tmp/expected.json && echo "PASS" || echo "FAIL"
+**Type:** Mixed — some automated log checks, some manual keypress verification.
+
+---
+
+### S1 — SocketServer Creates Socket File
+
+**Objective:** Verify that activating the SocketServer creates the Unix socket file.
+
+**Type:** Automated (log check)
+
+**Procedure:**
+1. `./manual_start.sh`
+2. Open overlay: Hold **Alt**, press **Tab**
+3. Check if socket exists: `ls -la /tmp/polysphere-kbd.sock`
+
+**Pass condition:**
 ```
+srwxr-xr-x 1 fireshark users 0 ... /tmp/polysphere-kbd.sock
+```
+
+---
+
+### S2 — kbd-capture Connects to Socket
+
+**Objective:** Verify that kbd-capture successfully connects to QML's SocketServer.
+
+**Type:** Automated (log check)
+
+**Procedure:**
+1. Open overlay (from S1)
+2. Check console for: `CONNECTED` or `KBDLOG` entries showing socket connection
+
+**Pass condition:** Console shows `KBDLOG` entries with key events (Tab, Alt, etc.)
+
+---
+
+### S3 — SplitParser Delivers Each JSON Line
+
+**Objective:** Verify that SplitParser.onRead fires ONCE per complete JSON line.
+
+**Type:** Automated (log check)
+
+**Procedure:**
+1. Open overlay (from S1)
+2. Press **Tab** once (while holding Alt)
+3. Check console for `KBDLOG` lines starting with `EVT`
+
+**Pass condition:** Each key press produces EXACTLY ONE `EVT` log line with valid JSON fields:
+```
+KBDLOG[N] EVT tab=1 alt=true
+```
+
+No partial lines, no empty events, no parse errors (`PE:` lines).
+
+---
+
+### S4 — All Key Types Detected
+
+**Objective:** Verify that all relevant key types are detected and forwarded.
+
+**Type:** Manual (requires keypresses)
+
+**Procedure:**
+1. Open overlay
+2. Press and release each of these keys while holding **Alt**:
+   - **Tab** (cycle)
+   - **Shift+Tab** (cycle backward)
+   - **a, b, c, 1, 2, 3** (search letters)
+   - **Backspace** (search correction)
+   - **Escape** (close)
+3. Release **Alt**
+
+**Pass condition:** Console shows `EVT` for each distinct press:
+```
+KBDLOG[N] EVT tab=1 alt=true
+KBDLOG[N] EVT a=1 alt=true
+KBDLOG[N] EVT backspace=1 alt=true
+KBDLOG[N] EVT esc=1 alt=false
+KBDLOG[N] EVT alt_left=0 alt=false    ← Alt release
+```
+
+---
+
+### S5 — Alt State Tracking
+
+**Objective:** Verify that Alt press/release state is correctly tracked across events.
+
+**Type:** Automated (log check)
+
+**Procedure:**
+1. Open overlay
+2. Hold **Alt**, press **Tab** once, release **Alt**
+3. Check console for the `EVT alt_left` lines
+
+**Pass condition:**
+```
+KBDLOG[N] EVT alt_left=1 alt=true    ← Alt pressed (mods.alt reflects current state)
+KBDLOG[N] EVT tab=1 alt=true          ← Tab while Alt held
+KBDLOG[N] EVT alt_left=0 alt=false    ← Alt released (mods.alt is now false)
+```
+
+---
+
+### S6 — Notification of Disconnect
+
+**Objective:** Verify that QML detects when kbd-capture disconnects.
+
+**Type:** Automated (log check)
+
+**Procedure:**
+1. Open overlay
+2. Kill kbd-capture manually: `pkill -f 'kbd-capture'`
+3. Check console for disconnect notification
+
+**Pass condition:** Console shows a disconnect message (from `onConnectedChanged` signal)
+
+---
+
+### S7 — Reconnection on Next Open
+
+**Objective:** Verify that closing and reopening the overlay re-establishes the socket connection.
+
+**Type:** Manual
+
+**Procedure:**
+1. Open overlay
+2. Close overlay (Escape)
+3. Open overlay again (Alt+Tab)
+4. Press **Tab** — should cycle
+
+**Pass condition:** Tab cycling works on the second open (proves kbd-capture reconnected)
+
+---
+
+### S8 — No Interference with Daemon Socket
+
+**Objective:** Verify that the kbd-capture socket does not conflict with the daemon socket.
+
+**Type:** Automated (log check)
+
+**Procedure:**
+1. Open overlay
+2. Send a test IPC to the daemon: `echo '{"type":"get_mru"}' | nc -U /run/user/1000/polysphere.sock`
+3. Check that daemon responds correctly
+
+**Pass condition:** Daemon returns valid JSON with MRU list. Both sockets work independently.
+
+---
+
+### S9 — SplitParser Recovers From Partial Lines
+
+**Objective:** Verify that SplitParser correctly buffers partial JSON lines across socket reads.
+
+**Type:** Automated (log check)
+
+**Procedure:**
+1. Open overlay
+2. Quickly press multiple keys (e.g., type "firefox" quickly)
+3. Check console for all `EVT` lines
+
+**Pass condition:** Every key press produces exactly one `EVT` line. No missing events, no `PE:` (parse error) lines.
+
+---
+
+### S10 — End-to-End Full Flow
+
+**Objective:** Complete end-to-end test of the entire kbd-capture → SocketServer → SplitParser → handleKbdEvent → action pipeline.
+
+**Type:** Manual
+
+**Procedure:**
+1. Open overlay with **Alt+Tab**
+2. Verify sphere appears with apps
+3. Press **Tab** 3 times → cycles through 3 different apps
+4. Type **"fi"** while holding Alt → sphere filters to apps matching "fi"
+5. Press **Tab** once → cycles within filtered results
+6. Release **Alt** → activates the selected app
+7. Overlay closes
+8. Open overlay again with **Alt+Tab**
+9. Press **Escape** → overlay closes
+
+**Pass condition:** All 9 steps complete successfully without errors. Console shows clean `EVT` lines for every keypress with no parse errors.

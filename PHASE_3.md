@@ -13,37 +13,33 @@
 │ kbd-capture (C)                                                         │
 │  Reads raw keystrokes from /dev/input/event* via evdev                  │
 │  Detects ALL keys regardless of Hyprland binds                          │
-│  Outputs JSON lines to stdout: {"key":"tab","value":1,"mods":{"alt":true}} │
+│  Outputs JSON lines                                                      │
 └──────────────┬──────────────────────────────────────────────────────────┘
-               │ stdout pipe (JSON lines)
+               │ Unix socket (kbd-capture connects AS CLIENT)
+               │ JSON lines: {"key":"tab","value":1,"mods":{"alt":true}}
                ▼
-┌──────────────────────────┐   IPC (Unix socket)   ┌────────────────────┐
-│ polysphere.qml            │◄─────────────────────►│ daemon.scm          │
-│                           │   get_mru, get_app_db │                     │
-│  ┌───────────────────┐   │   activate, cancel    │  ┌───────────────┐  │
-│  │ kbd-capture       │   │   track_launch        │  │ MRU List      │  │
-│  │ Process stdin →   │   │                       │  │ App Database  │  │
-│  │ JSON event parser │   │                       │  │ (desktop scan)│  │
-│  └────────┬──────────┘   │                       │  └───────────────┘  │
-│           ▼              │                       │                     │
-│  ┌──────────────────┐    │                       │                     │
-│  │ Key State Machine│    │                       │                     │
-│  │  (replaces       │    │                       │                     │
-│  │   Keys.onPressed)│    │                       │                     │
-│  └──────────────────┘    │                       │                     │
-│                           │                       │                     │
-│  IpcHandler "polysphere"  │                       │                     │
-│    cycle, reloadConfig,   │                       │                     │
-│    toggle                 │                       │                     │
-└──────────────────────────┘                       └─────────────────────┘
+┌───────────────────────────────────────────────┐   IPC (Unix socket)   ┌──────────┐
+│ polysphere.qml                                 │◄─────────────────────►│ daemon.scm│
+│                                                │   get_mru, activate   │          │
+│  ┌─────────────────────────────────────────┐  │   track_launch, cancel│          │
+│  │ SocketServer (creates /tmp/kbd.sock)     │  │                       │          │
+│  │   handler: Socket {                      │  │                       │          │
+│  │     parser: SplitParser {               │  │                       │          │
+│  │       onRead: msg -> handleKbdEvent(msg)│  │                       │          │
+│  │     }                                     │  │                       │          │
+│  │   }                                       │  │                       │          │
+│  └─────────────────────────────────────────┘  │                       │          │
+│                                                │                       │          │
+│  Key State Machine (handleKbdEvent)             │                       │          │
+│  IpcHandler (cycle, reloadConfig, toggle)      │                       │          │
+└───────────────────────────────────────────────┘                       └──────────┘
          ▲
          │ quickshell ipc call polysphere cycle (fallback only)
          ▼
 ┌──────────────────┐
 │ manual_start.sh   │
 │ launches daemon,  │
-│ quickshell, AND   │
-│ kbd-capture      │
+│ quickshell        │
 └──────────────────┘
 ```
 
@@ -54,12 +50,29 @@ Hyprland intercepts Alt+letter key combinations (e.g., Alt+F for fullscreen, Alt
 - The overlay can't reliably detect Alt release (for activation)
 - The overlay can't detect Tab cycling when Alt is held (Hyprland bind fires instead)
 
-**kbd-capture solves this by reading keystrokes directly from the kernel's evdev layer**, bypassing the compositor entirely. It runs as a separate C process, reads `/dev/input/event*` devices, and streams JSON-encoded key events to QML via a stdout pipe.
+**kbd-capture solves this by reading keystrokes directly from the kernel's evdev layer**, bypassing the compositor entirely.
 
-This completely replaces:
-- The Hyprland `ALT + Tab` bind (no Hyprland integration needed)
-- QML's `Keys.onPressed` / `Keys.onReleased` handlers
-- The `cycle()` IPC function for Tab cycling
+### Communication: QML SocketServer + kbd-capture client
+
+QML creates a **`SocketServer`** (from `Quickshell.Io`) that listens on a Unix socket path. When kbd-capture starts, **it connects to QML's socket as a client** and streams JSON key events. QML uses **`SplitParser`** (a `DataStreamParser`) which splits the stream by `\n` delimiter and fires **`onRead` once per complete JSON line**. This is purely event-driven — no polling, no retry loops, no timing issues.
+
+```qml
+import Quickshell.Io
+
+SocketServer {
+  id: kbdServer
+  active: false
+  path: "/tmp/polysphere-kbd.sock"
+  handler: Socket {
+    parser: SplitParser {
+      onRead: (message) => {
+        var evt = JSON.parse(message);
+        handleKbdEvent(evt);
+      }
+    }
+  }
+}
+```
 
 ### Design Note: Local Tab Cycling vs Daemon `cycle_next`
 
@@ -81,10 +94,11 @@ A small C program that captures raw keyboard events via evdev and streams them t
 ### Behavior
 
 1. Opens the keyboard evdev device (auto-detected or user-specified)
-2. Enters a loop reading `struct input_event` (24 bytes each)
-3. Maintains a modifier state bitmask (Alt, Ctrl, Shift, Meta)
-4. On each key press/release, outputs a JSON line to stdout
-5. Flushes stdout after each event (important for pipe)
+2. **Connects to QML's SocketServer** via Unix socket (`--connect <path>`)
+3. Enters a loop reading `struct input_event` (24 bytes each)
+4. Maintains a modifier state bitmask (Alt, Ctrl, Shift, Meta)
+5. On each key press/release, sends a JSON line over the socket connection
+6. Uses `poll()` to handle both evdev events and socket reconnection
 
 ### Output Format
 
@@ -138,10 +152,24 @@ kbd-capture receives these as command-line arguments and matches raw key events 
 
 ### Lifecycle
 
-kbd-capture is launched as a child `Process` of the QML overlay (`polysphere.qml`). QML manages its lifecycle:
-- Started when the overlay shell starts
-- Automatically restarted if it crashes
-- Terminated when the QML overlay exits
+**QML creates the socket server** (`SocketServer`), then starts kbd-capture via `execDetached` with `--connect <path>`.
+
+```
+┌──────────────────────┐     connect     ┌──────────────────┐
+│ QML SocketServer      │◄───────────────│ kbd-capture       │
+│ (listens on socket)   │  JSON lines     │ (connects as     │
+│ handler: Socket {     │                 │  client)         │
+│   SplitParser {       │                 │                  │
+│     onRead → handler │                 │                  │
+│   }                   │                 │                  │
+└──────────────────────┘                 └──────────────────┘
+```
+
+- QML's `SocketServer` is always available — kbd-capture connects when it starts
+- kbd-capture is started via `execDetached` (independent process)
+- `openOverlay()` activates the SocketServer and starts kbd-capture
+- `closeOverlay()` deactivates the SocketServer and kills kbd-capture
+- If kbd-capture crashes, the socket disconnects; QML detects this via `onConnectedChanged`
 
 This keeps `manual_start.sh` simple — no changes needed for kbd-capture.
 
@@ -492,29 +520,26 @@ function restoreFullSphere() {
 }
 ```
 
-### 4.4 Keyboard Handling (via kbd-capture)
+### 4.4 Keyboard Handling (via kbd-capture + SocketServer)
 
-`Keys.onPressed`/`Keys.onReleased` are **replaced entirely** by the kbd-capture event stream. The QML overlay runs `kbd-capture` as a child `Process` and reads JSON key events from its stdout:
+`Keys.onPressed`/`Keys.onReleased` are **replaced entirely** by the kbd-capture event stream. The QML overlay creates a **`SocketServer`** that listens for kbd-capture connections. kbd-capture connects as a client and streams JSON lines. **`SplitParser`** fires `onRead` once per complete JSON line (split by `\n`):
 
 ```qml
-// qml
-Process {
-    id: kbdProcess
-    command: ["kbd-capture", "--config", configPath]
-    running: true
-    stdout: StdioCollector {
-        onStreamFinished: {
-            // Process exited — restart after 1s
-            if (!kbdProcess.running) {
-                Qt.callLater(function() { kbdProcess.running = true; });
-            }
-        }
-        onStreamLine: {
-            try {
-                var evt = JSON.parse(this.line);
-                handleKbdEvent(evt);
-            } catch(e) {
-                console.log("POLYSPHERE: kbd parse error", String(e));
+import Quickshell.Io
+
+// SocketServer — listens on Unix socket for kbd-capture to connect
+SocketServer {
+    id: kbdServer
+    active: false  // activated by openOverlay()
+    path: "/tmp/polysphere-kbd.sock"
+    
+    // Each client connection creates a Socket with SplitParser
+    handler: Socket {
+        parser: SplitParser {
+            onRead: (message) => {
+                try {
+                    handleKbdEvent(JSON.parse(message));
+                } catch(e) {}
             }
         }
     }
@@ -550,8 +575,8 @@ function handleKbdEvent(evt) {
             if (window.visible) {
                 cycleSelection(shift ? -1 : 1);
             } else {
-                // First Alt+Tab: open overlay
                 window.altHeld = true;
+                window.tabWasPressed = true;
                 if (window.panelWindow) window.panelWindow.visible = true;
                 window.visible = true;
             }
@@ -559,7 +584,7 @@ function handleKbdEvent(evt) {
         return;
     }
     
-    // --- Letter/digit keys (search, only when Alt held) ---
+    // --- Letter/digit keys (search) ---
     if (alt && window.visible && evt.key.length === 1 && evt.key.match(/[a-zA-Z0-9]/)) {
         searchInput.text += evt.key;
         searchInput.forceActiveFocus();
@@ -1179,16 +1204,20 @@ Test runner: none — you perform these manually.
   - [x] Tiered Escape handler
   - [x] Legacy code removal
   - [x] `Caching.qml` removed
-- [ ] **kbd-capture work:**
-  - [ ] Create `lib/kbd-capture.c` — evdev keyboard capture program
-  - [ ] Create `Makefile` (or build script) for kbd-capture
-  - [ ] Add kbd-capture `Process` to `polysphere.qml`
-  - [ ] Add `handleKbdEvent()` function to replace `Keys.onPressed`/`Keys.onReleased`
-  - [ ] Remove `Keys.onPressed`/`Keys.onReleased` from `polysphere.qml`
-  - [ ] Remove Hyprland `ALT + Tab` IPC bind dependency
-  - [ ] Remove `cycle()` IPC function (replaced by kbd-capture)
-  - [ ] Test: Alt+Tab opens overlay via kbd-capture
-  - [ ] Test: Tab cycles through apps via kbd-capture
+- [ ] **kbd-capture + SocketServer work:**
+  - [x] `lib/kbd-capture.c` — evdev keyboard capture program (C)
+  - [x] `Makefile` — build system
+  - [ ] **Modify kbd-capture.c**: replace `--socket` (server) with `--connect <path>` (client)
+  - [ ] **Add `SocketServer`** to `polysphere.qml` — listens on Unix socket path
+  - [ ] **Add `SplitParser`** on the `Socket` handler — fires `onRead` per JSON line
+  - [ ] **Add `handleKbdEvent()`** — processes key events from SplitParser
+  - [ ] **Wire lifecycle**: `openOverlay()` → activates SocketServer + starts kbd-capture
+  - [ ] **Wire lifecycle**: `closeOverlay()` → deactivates SocketServer + kills kbd-capture
+  - [ ] **QML fallback**: `Keys.onPressed`/`onReleased` guarded by `if (kbdActive) return;`
+  - [ ] Test: kbd-capture connects to QML's SocketServer
+  - [ ] Test: Alt+letter events arrive via SplitParser.onRead
+  - [ ] Test: Alt+Tab opens overlay
+  - [ ] Test: Tab cycles through apps
   - [ ] Test: Alt+letter typing for search
   - [ ] Test: Alt release activates selected app
   - [ ] Test: Escape closes overlay
