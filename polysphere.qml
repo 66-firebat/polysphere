@@ -91,11 +91,63 @@ Item {
         },
         "search": {
             "delayMs": 500
+        },
+        "debug": {
+            "enabled": true,
+            "logFile": "/tmp/polysphere-debug.log"
         }
     })
 
     // Resolved config — set after each successful config load
     property var cfg: ({})
+
+    // ═══════════════════════════════════════════════════════════════
+    // Debug Logging System
+    // ═══════════════════════════════════════════════════════════════
+
+    readonly property bool debugEnabled: cfg.debug?.enabled ?? true
+    readonly property string debugLogFile: cfg.debug?.logFile ?? "/tmp/polysphere-debug.log"
+
+    function debugLog(category, message, extra) {
+        if (!window.debugEnabled) return;
+        var d = new Date();
+        var ts = d.getHours().toString().padStart(2,"0") + ":" +
+                 d.getMinutes().toString().padStart(2,"0") + ":" +
+                 d.getSeconds().toString().padStart(2,"0") + "." +
+                 d.getMilliseconds().toString().padStart(3,"0");
+        var extraStr = extra !== undefined ? " " + JSON.stringify(extra) : "";
+        var line = "POLYDBG [" + ts + "][" + category + "] " + message + extraStr;
+        console.log(line);
+        // Write to debug log file asynchronously
+        Quickshell.execDetached(["bash", "-c",
+            "echo '" + line.replace(/'/g,"'\\''") + "' >> " + window.debugLogFile
+        ]);
+    }
+
+    function debugState(label) {
+        window.debugLog("STATE", label, {
+            visible: window.visible,
+            altHeld: window.altHeld,
+            tabWasPressed: window.tabWasPressed,
+            selectedIndex: window.selectedAppIndex,
+            selectedName: window.selectedAppName,
+            appCount: appModel ? appModel.count : -1,
+            introPhase: window.introPhase,
+            searchLen: window.searchQuery ? window.searchQuery.length : 0,
+            openingGuard: window._openingOverlay,
+            panelVisible: window.panelWindow ? window.panelWindow.visible : "no-ref"
+        });
+    }
+
+    // Truncate debug log at startup (keeps last 500 lines instead of growing unbounded)
+    function initDebugLog() {
+        Quickshell.execDetached(["bash", "-c",
+            "touch " + window.debugLogFile + " && tail -n 500 " + window.debugLogFile +
+            " > /tmp/polysphere-debug-tmp.log && mv /tmp/polysphere-debug-tmp.log " +
+            window.debugLogFile + " && echo \"─── PolySphere session started $(date) ───\" >> " +
+            window.debugLogFile
+        ]);
+    }
 
     // Deep merge: overrides recursively replace matching leaves in defaults
     function deepMerge(defaults, overrides) {
@@ -198,13 +250,21 @@ Item {
 
         function reloadConfig(): void {
             console.log("POLYSPHERE: Manual config reload triggered via IPC");
+            debugLog("IPC", "reloadConfig called");
             configReader.running = false;
             configReader.running = true;
             configFallback.running = false;
             configFallback.running = true;
         }
 
+        // Debug: dump all current state to log (callable via IPC)
+        function debugState(): void {
+            window.debugLog("IPC", "debugState called — dumping state");
+            window.debugState("ipc-dump");
+        }
+
         function toggle(): void {
+            debugLog("IPC", "toggle called, currently visible=" + window.visible);
             if (window.visible) {
                 closeOverlay();
             } else {
@@ -215,10 +275,13 @@ Item {
         // Called by Hyprland's Alt+Tab bind (or submap Tab handler).
         // First press opens overlay; subsequent presses cycle forward.
         function cycle(): void {
+            debugLog("CYCLE", "cycle() called, visible=" + window.visible +
+                     " altHeld=" + window.altHeld + " tabPressed=" + window.tabWasPressed);
             if (!window.visible) {
                 // First Alt+Tab: open overlay, start tracking Alt
                 window.altHeld = true;
                 window.tabWasPressed = true;
+                debugLog("SUBMAP", "Entering switcher submap (via cycle first-open)");
                 // Enter Hyprland switcher submap so Tab/Shift+Tab/Escape are
                 // intercepted there (blocking global Alt+letter binds), and
                 // Alt release falls through to QML Keys.onReleased.
@@ -241,6 +304,7 @@ Item {
         // Called by Hyprland submap Shift+Tab bind.
         // Cycles backward through the visible appModel.
         function cycleBackward(): void {
+            debugLog("CYCLE", "cycleBackward() called, selectedIndex=" + window.selectedAppIndex);
             window.tabWasPressed = true;
             if (appModel.count > 0) {
                 var prevIndex = (window.selectedAppIndex - 1 + appModel.count) % appModel.count;
@@ -251,11 +315,13 @@ Item {
         // Called by Hyprland submap Escape bind.
         // Clears search text first, or closes overlay if search is already empty.
         function cancel(): void {
+            debugLog("IPC", "cancel() called, searchLen=" + searchInput.text.length);
             window.handleEscape();
         }
 
         // Activates the currently selected app (focus if running, launch if not).
         function commit(): void {
+            debugLog("IPC", "commit() called");
             window.triggerActivate();
         }
     }
@@ -340,8 +406,12 @@ Item {
         });
     }
 
-    // Load app database on startup
-    Component.onCompleted: loadAppDatabase()
+    // Load app database and init debug log on startup
+    Component.onCompleted: {
+        initDebugLog();
+        debugLog("BOOT", "PolySphere startup complete");
+        loadAppDatabase();
+    }
 
     // ═══════════════════════════════════════════════════════════════
     // Overlay Lifecycle
@@ -353,10 +423,13 @@ Item {
     function openOverlay() {
         // Guard against re-entrance — prevents multiple concurrent get_mru requests
         if (window._openingOverlay) {
-            console.log("POLYSPHERE: openOverlay already in progress, skipping");
+            debugLog("LIFECYCLE", "openOverlay already in progress, skipping");
             return;
         }
         window._openingOverlay = true;
+
+        debugLog("LIFECYCLE", "openOverlay start, savedSelectionIndex=" + savedSelectionIndex +
+                 " appCount=" + (appModel ? appModel.count : -1));
 
         // Make the PanelWindow visible so it can receive keyboard/mouse events
         if (panelWindow) {
@@ -368,14 +441,15 @@ Item {
         window.sphereZoom = 1.0;
 
         // Fetch fresh MRU list from daemon
-        console.log("POLYSPHERE: openOverlay sending get_mru");
+        debugLog("DAEMON", "Sending get_mru request");
         daemonRequest("get_mru", {}, function(response) {
-            console.log("POLYSPHERE: get_mru response received with " + (response.mru ? response.mru.length : 0) + " entries");
+            debugLog("DAEMON", "get_mru response: " + (response.mru ? response.mru.length : 0) + " entries");
             if (response.mru) {
                 currentMruList = response.mru;
                 populateSphereFromMru(response);
             }
             window._openingOverlay = false;
+            debugState("after-populate");
         });
 
         // Load app database on first open if not already loaded
@@ -389,6 +463,7 @@ Item {
 
     // Close the overlay — plays exit animation, then hides
     function closeOverlay() {
+        debugLog("LIFECYCLE", "closeOverlay() called");
         searchTimer.running = false;
         closeSequence.start();
     }
@@ -718,9 +793,11 @@ Item {
             if (window.panelWindow) {
                 window.panelWindow.visible = false;
             }
+            debugLog("SUBMAP", "Resetting submap (closeSequence complete)");
             // Exit the Hyprland switcher submap (safety net — QML handles
             // activation, submap just needs to be cleaned up)
             Quickshell.execDetached(["hyprctl", "dispatch", "submap", "reset"]);
+            debugState("after-close");
         } }
     }
 
@@ -808,9 +885,12 @@ Item {
 
     // Find an app by ID in the current appModel and highlight it
     function updateSelection(selectedId) {
+        debugLog("SELECT", "updateSelection looking for id=" + selectedId +
+                 " in " + appModel.count + " entries");
         for (var i = 0; i < appModel.count; i++) {
             var entry = appModel.get(i);
             if (entry && entry.id === selectedId) {
+                debugLog("SELECT", "Found at index " + i);
                 selectByIndex(i);
                 break;
             }
@@ -820,9 +900,18 @@ Item {
     // Activate the currently selected app — focus if running, launch if not
     function triggerActivate() {
         var idx = window.selectedAppIndex;
-        if (idx < 0 || idx >= appModel.count) return;
+        if (idx < 0 || idx >= appModel.count) {
+            debugLog("ACTIVATE", "triggerActivate: invalid index " + idx);
+            return;
+        }
         var entry = appModel.get(idx);
-        if (!entry) return;
+        if (!entry) {
+            debugLog("ACTIVATE", "triggerActivate: entry is null at index " + idx);
+            return;
+        }
+
+        debugLog("ACTIVATE", "triggerActivate: " + entry.id +
+                 " running=" + entry.running + " exec=" + (entry.exec || ""));
 
         if (entry.running) {
             // Use execDetached so the command runs INDEPENDENTLY of QML visibility.
@@ -834,16 +923,29 @@ Item {
             if (window.panelWindow) {
                 window.panelWindow.visible = false;
             }
+            // CRITICAL: Must reset submap here — closeSequence is NOT used for
+            // running apps (immediate hide), so the submap would remain active
+            // and intercept the NEXT Alt+Tab press. Bug report: pressing Tab
+            // (no Alt) opened the overlay because submap was still active.
+            debugLog("SUBMAP", "Resetting submap (triggerActivate running app)");
+            Quickshell.execDetached(["hyprctl", "dispatch", "submap", "reset"]);
+            debugState("after-activate-running");
         } else {
             Quickshell.execDetached(["bash", "-c", entry.exec || entry.id]);
-            daemonRequest("track_launch", {app: entry.id}, function(r) {});
+            debugLog("DAEMON", "track_launch for " + entry.id);
+            daemonRequest("track_launch", {app: entry.id}, function(r) {
+                debugLog("DAEMON", "track_launch response for " + entry.id + ": " + JSON.stringify(r));
+            });
             closeOverlay();
         }
     }
 
     // Tiered Escape: clear search first, then close overlay
     function handleEscape() {
+        debugLog("ESCAPE", "handleEscape() called, searchLen=" + searchInput.text.length +
+                 " visible=" + window.visible);
         if (searchInput.text.length > 0) {
+            debugLog("ESCAPE", "Tier 1: clearing search text");
             searchInput.text = "";
             searchQuery = "";
             searchTimer.running = false;
@@ -851,7 +953,9 @@ Item {
                 restoreFullSphere();
             }
         } else {
+            debugLog("ESCAPE", "Tier 2: closing overlay");
             daemonRequest("cancel", {}, function(r) {
+                debugLog("DAEMON", "cancel response: " + JSON.stringify(r));
                 closeOverlay();
             });
         }
@@ -874,18 +978,25 @@ Item {
 
     // Run Fuse.js search and update the sphere model
     function executeSearch() {
+        debugLog("SEARCH", "executeSearch() query='" + searchQuery + "'");
+
         if (searchQuery === "") {
             // Don't call restoreFullSphere here — the model was already
             // populated by get_mru response in openOverlay.
             // Calling it again would clear/repopulate unnecessarily,
             // triggering TypeErrors in delegate bindings during transition.
             window.sphereZoom = 1.0;
+            debugLog("SEARCH", "Empty query, returning (sphere already populated)");
             return;
         }
 
-        if (!fuseIndex) return;
+        if (!fuseIndex) {
+            debugLog("SEARCH", "fuseIndex is null, skipping search");
+            return;
+        }
 
         var results = fuseIndex.search(searchQuery);
+        debugLog("SEARCH", "Fuse returned " + results.length + " results");
         var topResults = results.slice(0, cfg.totalApps || 20);
         populateSearchResults(topResults);
 
@@ -896,6 +1007,7 @@ Item {
             selectedAppExec = appModel.get(0).exec || "";
             centerOnApp(0);
             sphereZoom = sphereSelectedZoom;
+            debugLog("SEARCH", "Auto-selected first result: " + selectedAppName);
         }
     }
 
