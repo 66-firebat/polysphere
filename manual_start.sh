@@ -4,17 +4,16 @@
 # After running this script, open the overlay via:
 #   quickshell ipc -p /run/media/fireshark/FORGE_CELL/data/github_repositories/hypr-comp/shell.qml call polysphere toggle
 #
-# IMPORTANT: Use "open" not "toggle" for the Hyprland bind, otherwise
-# every Tab press while holding Alt will open/close the overlay repeatedly.
-# Add this to ~/.config/hypr/keymaps.lua:
+# Hyprland intercepts Alt+Tab before QML can see it, so cycling is done
+# via IPC. Use "cycle" for the Hyprland bind:
 #   hl.bind("ALT + Tab", function()
 #       hl.dispatch(hl.dsp.exec_cmd(
-#           "quickshell ipc -p /run/media/fireshark/FORGE_CELL/data/github_repositories/hypr-comp/shell.qml call polysphere open"
+#           "quickshell ipc -p /run/media/fireshark/FORGE_CELL/data/github_repositories/hypr-comp/shell.qml call polysphere cycle"
 #       ))
 #   end
 #
-# Then when the overlay is open, Tab cycles apps (QML handles it),
-# and releasing Alt activates the selected app.
+# First press opens the overlay. Subsequent presses cycle forward.
+# Releasing Alt activates the selected app (Alt key reaches QML fine).
 
 set -euo pipefail
 
@@ -25,15 +24,18 @@ DAEMON_LOG="/tmp/polysphere-daemon-manual.log"
 echo "═══ PolySphere Manual Test Launcher ═══"
 echo ""
 
-# Clean up any leftover processes
-pkill -f "guile.*daemon.scm" 2>/dev/null || true
-pkill -f "quickshell.*shell.qml" 2>/dev/null || true
-rm -f "$SOCKET" 2>/dev/null
+# Aggressively kill ALL daemon and quickshell processes
+pkill -9 -f "daemon.scm" 2>/dev/null || true
+pkill -9 -f "quickshell.*shell.qml" 2>/dev/null || true
+rm -f /run/user/1000/polysphere*.sock 2>/dev/null
 
-# Start the daemon
+# Clear Guile's bytecode cache so edits to daemon.scm take effect
+find ~/.cache/guile -name "daemon.scm*" -delete 2>/dev/null || true
+
+# Start the daemon (--no-auto-compile ensures we use the latest source)
 echo "[1/2] Starting daemon..."
 cd "$REPO_DIR"
-guile daemon.scm --verbose > "$DAEMON_LOG" 2>&1 &
+guile --no-auto-compile daemon.scm --verbose > "$DAEMON_LOG" 2>&1 &
 DAEMON_PID=$!
 
 # Wait for daemon socket
@@ -60,11 +62,11 @@ sleep 2
 echo ""
 echo "═══ Ready for testing ═══"
 echo ""
-echo "To open the overlay, run in another terminal:"
-echo "  quickshell ipc -p /run/media/fireshark/FORGE_CELL/data/github_repositories/hypr-comp/shell.qml call polysphere open"
+echo "To open/cycle the overlay, run in another terminal:"
+echo "  quickshell ipc -p /run/media/fireshark/FORGE_CELL/data/github_repositories/hypr-comp/shell.qml call polysphere cycle"
 echo ""
 echo "To close it:"
-echo "  quickshell ipc -p /run/media/fireshark/FORGE_CELL/data/github_repositories/hypr-comp/shell.qml call polysphere toggle
+echo "  quickshell ipc -p /run/media/fireshark/FORGE_CELL/data/github_repositories/hypr-comp/shell.qml call polysphere toggle"
 echo ""
 echo "To close everything when done:"
 echo "  pkill -f quickshell; pkill -f guile.*daemon; rm -f $SOCKET"

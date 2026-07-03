@@ -15,20 +15,20 @@ cd /run/media/fireshark/FORGE_CELL/data/github_repositories/hypr-comp
 
 ### Open overlay (second terminal, or Hyprland keybind)
 
-Use `open` (not `toggle`) so repeated Tab presses don't close it.
+Use `cycle` — first call opens, subsequent calls cycle forward.
 ```bash
-quickshell ipc -p /run/media/fireshark/FORGE_CELL/data/github_repositories/hypr-comp/shell.qml call polysphere open
+quickshell ipc -p /run/media/fireshark/FORGE_CELL/data/github_repositories/hypr-comp/shell.qml call polysphere cycle
 ```
 
 ### Keybind for Hyprland
 
-**Use `open` not `toggle`.** Otherwise every Tab press will toggle the overlay open/closed instead of cycling.
+Hyprland intercepts Alt+Tab before QML can see the key event, so cycling must go through IPC. Use `cycle`:
 
 Add to `~/.config/hypr/keymaps.lua`:
 ```lua
 hl.bind("ALT + Tab", function()
     hl.dispatch(hl.dsp.exec_cmd(
-        "quickshell ipc -p /run/media/fireshark/FORGE_CELL/data/github_repositories/hypr-comp/shell.qml call polysphere open"
+        "quickshell ipc -p /run/media/fireshark/FORGE_CELL/data/github_repositories/hypr-comp/shell.qml call polysphere cycle"
     ))
 end)
 ```

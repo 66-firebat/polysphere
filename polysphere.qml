@@ -212,11 +212,26 @@ Item {
             }
         }
 
-        // One-shot open: only opens if closed, no-op if already open.
-        // Use this in Hyprland's Alt+Tab bind to prevent repeated toggling.
-        function open(): void {
+        // Called by Hyprland's Alt+Tab bind (since Hyprland consumes the key event
+        // before QML's Keys.onPressed can see it).
+        // First press opens overlay; subsequent presses cycle forward.
+        function cycle(): void {
             if (!window.visible) {
+                // First Alt+Tab: open overlay, start tracking Alt
+                window.altHeld = true;
+                window.tabWasPressed = true;
+                // Must make PanelWindow visible first so QML scene processes changes
+                if (window.panelWindow) {
+                    window.panelWindow.visible = true;
+                }
                 window.visible = true;
+            } else {
+                // Subsequent Tab while holding Alt: cycle to next app
+                window.tabWasPressed = true;
+                if (appModel.count > 0) {
+                    var nextIndex = (window.selectedAppIndex + 1 + appModel.count) % appModel.count;
+                    window.selectByIndex(nextIndex);
+                }
             }
         }
     }
@@ -240,6 +255,7 @@ Item {
     property int savedSelectionIndex: -1
     property bool altHeld: false
     property bool tabWasPressed: false
+    property bool _openingOverlay: false  // guard to prevent re-entrant openOverlay()
 
     // Fuse.js search options
     readonly property var fuseOptions: ({
@@ -307,21 +323,35 @@ Item {
     // Overlay Lifecycle
     // ═══════════════════════════════════════════════════════════════
 
-    // Open the overlay — called by toggle() or onVisibleChanged
+    // Open the overlay — called by toggle(), cycle(), or onVisibleChanged
+    // NOTE: Do NOT reset altHeld/tabWasPressed here! cycle() sets them before
+    //       calling openOverlay(), and they're needed for Alt-release activation.
     function openOverlay() {
-        window.altHeld = false;
-        window.tabWasPressed = false;
+        // Guard against re-entrance — prevents multiple concurrent get_mru requests
+        if (window._openingOverlay) {
+            console.log("POLYSPHERE: openOverlay already in progress, skipping");
+            return;
+        }
+        window._openingOverlay = true;
+
+        // Make the PanelWindow visible so it can receive keyboard/mouse events
+        if (panelWindow) {
+            panelWindow.visible = true;
+        }
         window.searchQuery = "";
         searchInput.text = "";
         savedSelectionIndex = window.selectedAppIndex;
         window.sphereZoom = 1.0;
 
         // Fetch fresh MRU list from daemon
+        console.log("POLYSPHERE: openOverlay sending get_mru");
         daemonRequest("get_mru", {}, function(response) {
+            console.log("POLYSPHERE: get_mru response received with " + (response.mru ? response.mru.length : 0) + " entries");
             if (response.mru) {
                 currentMruList = response.mru;
                 populateSphereFromMru(response);
             }
+            window._openingOverlay = false;
         });
 
         // Load app database on first open if not already loaded
@@ -341,7 +371,19 @@ Item {
 
     // Populate the sphere model from a get_mru daemon response
     function populateSphereFromMru(response) {
-        var mru = response.mru;
+        // Deduplicate the response by ID (daemon may return duplicates)
+        var seenIds = {};
+        var mru = [];
+        for (var di = 0; di < response.mru.length; di++) {
+            var id = response.mru[di].id;
+            if (!seenIds[id]) {
+                seenIds[id] = true;
+                mru.push(response.mru[di]);
+            }
+        }
+        if (mru.length !== response.mru.length) {
+            console.log("POLYSPHERE: deduplicated " + (response.mru.length - mru.length) + " entries from daemon response");
+        }
         var i = 0;
 
         // Update existing entries in-place (preserves delegates, avoids TypeErrors)
@@ -372,6 +414,22 @@ Item {
         while (appModel.count > mru.length) {
             appModel.remove(appModel.count - 1, 1);
         }
+
+        // Debug: verify model contents
+        var ids = [];
+        for (var di = 0; di < appModel.count; di++) {
+            ids.push(appModel.get(di).id);
+        }
+        var uniqueIds = {};
+        var dupes = [];
+        for (var di = 0; di < ids.length; di++) {
+            if (uniqueIds[ids[di]]) dupes.push(ids[di]);
+            uniqueIds[ids[di]] = true;
+        }
+        console.log("POLYSPHERE: appModel after populate = " + appModel.count + " entries" +
+                    (dupes.length > 0 ? " DUPLICATES: " + dupes.join(",") : ""));
+        console.log("POLYSPHERE: response.mru had " + mru.length + " entries");
+
         window.selectedAppIndex = -1;
 
         // Highlight the daemon's selected app
@@ -630,7 +688,13 @@ Item {
     SequentialAnimation {
         id: closeSequence
         NumberAnimation { target: window; property: "introPhase"; to: 0.0; duration: window.animExitFade; easing.type: Easing.OutQuint }
-        ScriptAction { script: { window.visible = false; } }
+        ScriptAction { script: { 
+            window.visible = false;
+            // Hide the PanelWindow so it stops intercepting mouse/keyboard events
+            if (window.panelWindow) {
+                window.panelWindow.visible = false;
+            }
+        } }
     }
 
     property string searchQuery: ""
@@ -639,6 +703,10 @@ Item {
     property string selectedAppName: ""
     property string selectedAppIcon: ""
     property string selectedAppExec: ""
+
+    // Reference to the shell PanelWindow, set by shell.qml after loading.
+    // Used to directly control visibility for click-through when closed.
+    property var panelWindow: null
 
     ListModel { id: appModel }
 
@@ -730,9 +798,15 @@ Item {
         if (!entry) return;
 
         if (entry.running) {
-            daemonRequest("activate", {app: entry.id}, function(r) {
-                if (r.ok) closeOverlay();
-            });
+            // Use execDetached so the command runs INDEPENDENTLY of QML visibility.
+            // daemonProcess wouldn't work here because its parent is about to be hidden.
+            var cmd = "echo '" + JSON.stringify({type: "activate", app: entry.id}).replace(/'/g, "'\\''") + "' | nc -U " + daemonSocket;
+            Quickshell.execDetached(["bash", "-c", cmd]);
+            // Then hide overlay (no animation, immediate)
+            window.visible = false;
+            if (window.panelWindow) {
+                window.panelWindow.visible = false;
+            }
         } else {
             Quickshell.execDetached(["bash", "-c", entry.exec || entry.id]);
             daemonRequest("track_launch", {app: entry.id}, function(r) {});

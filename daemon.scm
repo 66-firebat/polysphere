@@ -361,8 +361,14 @@ EXAMPLES:
             #f)))))
 
 (define (focus-app app)
-  "Focus a window by class. Returns #t on success, #f on failure."
-  (let ((result (run-hyprctl "dispatch" "focuswindow" (string-append "class:" app))))
+  "Focus a window by class using Hyprland's Lua dispatch API.
+   Old: hyprctl dispatch focuswindow class:<app>
+   New: hyprctl dispatch 'hl.dsp.focus({window=\"class:<app>\"})'"
+  (let* ((lua-cmd (string-append "'hl.dsp.focus({window=\"class:" app "\"})'"))
+         (full-cmd (string-join (list "hyprctl" "dispatch" lua-cmd) " "))
+         (result (run-hyprctl "dispatch" lua-cmd)))
+    (log-msg "DEBUG" (string-append "focus-app: running: " full-cmd))
+    (log-msg "DEBUG" (string-append "focus-app: result: " (or result "#f")))
     (if result #t #f)))
 
 
@@ -373,7 +379,10 @@ EXAMPLES:
 (define (mru-push-front app)
   "Move app to index 0 of mru-list. If app is not already in the list,
    prepend it. Truncate to maxEntries after."
-  (set! mru-list (cons app (delete app mru-list eq?)))
+  ;; Use 2-arg delete (defaults to equal? which compares strings by value).
+  ;; 3-arg delete with eq? compares by object identity, which fails for
+  ;; strings from different JSON parses (same content, different objects).
+  (set! mru-list (cons app (delete app mru-list)))
   (let ((max-entries (config-get-maxEntries)))
     (when (> (length mru-list) max-entries)
       (set! mru-list (take mru-list max-entries))))
@@ -383,7 +392,7 @@ EXAMPLES:
 
 (define (mru-remove app)
   "Remove app from mru-list if present."
-  (set! mru-list (delete app mru-list eq?)))
+  (set! mru-list (delete app mru-list)))
 
 
 ;; ────────────────────────────────────────────────────────────────
@@ -540,19 +549,26 @@ EXAMPLES:
                           (cons app seen))))))))
 
          ;; Combine: segment1 (running MRU) + segment1b (tracked, not running) + segment2 (whitelist)
-         (mru-list (append segment1 segment1b segment2))
-         (mru-vec (list->vector mru-list))
+         (_ (log-msg "DEBUG" (string-append "build-mru: seg1=" (number->string (length segment1))
+                                           " seg1b=" (number->string (length segment1b))
+                                           " seg2=" (number->string (length segment2)))))
+         (combined (append segment1 segment1b segment2))
+         (combined-ids (map (lambda (e) (if (pair? e) (assoc-ref* e "id") "?")) combined))
+         (_ (log-msg "DEBUG" (string-append "build-mru: global-mru-len=" (number->string (length mru-list))
+                                           " total=" (number->string (length combined))
+                                           " ids=" (string-join combined-ids ","))))
+         (mru-vec (list->vector combined))
 
-         ;; Determine current and selected
-         (current-str (if (null? mru-list)
+         ;; Determine current and selected (from the COMBINED list, not global mru-list)
+         (current-str (if (null? combined)
                          "null"
-                         (string-append "\"" (assoc-ref* (car mru-list) "id") "\"")))
+                         (string-append "\"" (assoc-ref* (car combined) "id") "\"")))
          (selected-str (cond
-                        ((null? mru-list) "null")
-                        ((null? (cdr mru-list))
-                         (string-append "\"" (assoc-ref* (car mru-list) "id") "\""))
+                        ((null? combined) "null")
+                        ((null? (cdr combined))
+                         (string-append "\"" (assoc-ref* (car combined) "id") "\""))
                         (else
-                         (string-append "\"" (assoc-ref* (cadr mru-list) "id") "\""))))
+                         (string-append "\"" (assoc-ref* (cadr combined) "id") "\""))))
          (mru-json-str (scm->json-string mru-vec)))
 
     ;; Build JSON string manually to handle null values
@@ -630,25 +646,17 @@ EXAMPLES:
   "Handle an activate request."
   (log-verbose (string-append "Handling activate for " app))
 
-  ;; Check if app is in MRU list
-  (let ((mru-entry (find (lambda (e)
-                           (let ((id (if (pair? e) (assoc-ref* e "id") e)))
-                             (string=? id app)))
-                         mru-list)))
-    (if (not mru-entry)
-        ;; App not in MRU list at all
-        (scm->json-string (make-ok-false-response "app not in MRU list" app))
-        ;; Check if app is running
-        (let ((running-set (get-running-apps)))
-          (if (not (list-contains? running-set app))
-              ;; App is not running
-              (scm->json-string (make-ok-false-response "app is not running" app))
-              ;; App is running — focus it
-              (begin
-                (mru-push-front app)
-                (focus-app app)
-                (log-msg "INFO" (string-append "Activated " app))
-                (scm->json-string (make-ok-response))))))))
+  ;; Check if app is running (via hyprctl clients)
+  (let ((running-set (get-running-apps)))
+    (if (not (list-contains? running-set app))
+        ;; App is not running — reject
+        (scm->json-string (make-ok-false-response "app is not running" app))
+        ;; App is running — focus it
+        (begin
+          (mru-push-front app)
+          (focus-app app)
+          (log-msg "INFO" (string-append "Activated " app))
+          (scm->json-string (make-ok-response))))))
 
 (define (handle-cancel)
   "Handle a cancel request."
