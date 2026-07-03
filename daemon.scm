@@ -655,6 +655,11 @@ EXAMPLES:
         (begin
           (mru-push-front app)
           (focus-app app)
+          ;; Reset the Hyprland switcher submap. This is done from the daemon
+          ;; process (persistent, independent of QML engine state) so it's
+          ;; always reliable — unlike QML's execDetached which can get queued
+          ;; or dropped when the PanelWindow goes invisible.
+          (run-hyprctl "dispatch" "submap" "reset")
           (log-msg "INFO" (string-append "Activated " app))
           (scm->json-string (make-ok-response))))))
 
@@ -672,6 +677,9 @@ EXAMPLES:
   "Handle a track_launch request — add app to MRU without hyprctl check."
   (log-verbose (string-append "Handling track_launch for " app))
   (mru-push-front app)
+  ;; Also reset the submap in case the overlay closed via a non-running app
+  ;; launch. Same reasoning as handle-activate: daemon process is reliable.
+  (run-hyprctl "dispatch" "submap" "reset")
   (log-msg "INFO" (string-append "Tracked launch of " app))
   (scm->json-string (make-ok-response)))
 

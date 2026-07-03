@@ -792,12 +792,11 @@ Item {
         id: closeSequence
         NumberAnimation { target: window; property: "introPhase"; to: 0.0; duration: window.animExitFade; easing.type: Easing.OutQuint }
         ScriptAction { script: { 
-            // Reset submap FIRST while QML engine is still processing this
-            // animation. Done before hiding the PanelWindow so execDetached
-            // reliably spawns the hyprctl process.
-            debugLog("SUBMAP", "Resetting submap (closeSequence, before hide)");
+            // For the non-running path: track_launch also resets submap in
+            // the daemon. For Escape/toggle paths without daemon involvement:
+            // reset submap as a safety net while engine is still active.
+            debugLog("SUBMAP", "Resetting submap (closeSequence safety net)");
             Quickshell.execDetached(["hyprctl", "dispatch", "submap", "reset"]);
-            // Then hide overlay
             window.visible = false;
             if (window.panelWindow) {
                 window.panelWindow.visible = false;
@@ -933,16 +932,13 @@ Item {
                  " running=" + entry.running + " exec=" + (entry.exec || ""));
 
         if (entry.running) {
-            // Use execDetached so the command runs INDEPENDENTLY of QML visibility.
-            // daemonProcess wouldn't work here because its parent is about to be hidden.
+            // Send activate to daemon, which also resets the submap as a side
+            // effect (daemon.scm handle-activate does hyprctl dispatch submap
+            // reset). The daemon is a persistent independent process, so this
+            // is always reliable unlike QML execDetached.
             var cmd = "echo '" + JSON.stringify({type: "activate", app: entry.id}).replace(/'/g, "'\\''") + "' | nc -U " + daemonSocket;
             Quickshell.execDetached(["bash", "-c", cmd]);
-            // Reset submap FIRST while QML engine is fully active.
-            // execDetached spawns an independent process, so even if the engine
-            // pauses after hiding the PanelWindow, the hyprctl command is already
-            // running. Doing this AFTER hide was unreliable.
-            debugLog("SUBMAP", "Resetting submap (triggerActivate, before hide)");
-            Quickshell.execDetached(["hyprctl", "dispatch", "submap", "reset"]);
+            debugLog("SUBMAP", "Submap reset delegated to daemon (handle-activate)");
             // Then hide overlay (no animation, immediate)
             window.visible = false;
             if (window.panelWindow) {
