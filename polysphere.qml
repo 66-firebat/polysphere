@@ -273,6 +273,9 @@ Item {
         }
 
         // Called by Hyprland's Alt+Tab bind (or submap Tab handler).
+        // Submap enter/exit is handled entirely by Hyprland's keymaps.lua
+        // (synchronous hl.dispatch, NOT execDetached) to avoid race conditions
+        // where execDetached gets queued when the PanelWindow goes invisible.
         // First press opens overlay; subsequent presses cycle forward.
         function cycle(): void {
             debugLog("CYCLE", "cycle() called, visible=" + window.visible +
@@ -281,11 +284,8 @@ Item {
                 // First Alt+Tab: open overlay, start tracking Alt
                 window.altHeld = true;
                 window.tabWasPressed = true;
-                debugLog("SUBMAP", "Entering switcher submap (via cycle first-open)");
-                // Enter Hyprland switcher submap so Tab/Shift+Tab/Escape are
-                // intercepted there (blocking global Alt+letter binds), and
-                // Alt release falls through to QML Keys.onReleased.
-                Quickshell.execDetached(["hyprctl", "dispatch", "submap", "switcher"]);
+                // Note: submap entry is done by Hyprland's ALT+Tab bind handler,
+                // NOT by execDetached here. See keymaps.lua for the submap enter.
                 // Must make PanelWindow visible first so QML scene processes changes
                 if (window.panelWindow) {
                     window.panelWindow.visible = true;
@@ -793,10 +793,10 @@ Item {
             if (window.panelWindow) {
                 window.panelWindow.visible = false;
             }
-            debugLog("SUBMAP", "Resetting submap (closeSequence complete)");
-            // Exit the Hyprland switcher submap (safety net — QML handles
-            // activation, submap just needs to be cleaned up)
-            Quickshell.execDetached(["hyprctl", "dispatch", "submap", "reset"]);
+            // Submap reset is handled by Hyprland's submap handlers
+            // (Escape → cancel, Alt release → commit), NOT by execDetached here.
+            // execDetached for submap reset is unreliable when PanelWindow is
+            // about to go invisible — use synchronous hl.dispatch in keymaps.lua.
             debugState("after-close");
         } }
     }
@@ -923,12 +923,11 @@ Item {
             if (window.panelWindow) {
                 window.panelWindow.visible = false;
             }
-            // CRITICAL: Must reset submap here — closeSequence is NOT used for
-            // running apps (immediate hide), so the submap would remain active
-            // and intercept the NEXT Alt+Tab press. Bug report: pressing Tab
-            // (no Alt) opened the overlay because submap was still active.
-            debugLog("SUBMAP", "Resetting submap (triggerActivate running app)");
-            Quickshell.execDetached(["hyprctl", "dispatch", "submap", "reset"]);
+            // Submap reset is handled by Hyprland's submap Alt release handler
+            // (synchronous hl.dispatch, not execDetached). The submap captures
+            // Alt release BEFORE it reaches QML and resets the submap via
+            // hl.dispatch(hl.dsp.submap("reset")), which is always reliable.
+            debugLog("SUBMAP", "Submap reset delegated to keymaps.lua Alt release handler");
             debugState("after-activate-running");
         } else {
             Quickshell.execDetached(["bash", "-c", entry.exec || entry.id]);
