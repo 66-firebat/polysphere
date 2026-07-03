@@ -168,9 +168,13 @@ Q3: Did the window that was focused BEFORE Alt+Tab remain focused (no window swi
 
 **Objective:** Verify typing filters the sphere using Fuse.js fuzzy search.
 
+**Note:** Release Alt BEFORE typing. Hyprland intercepts Alt+letter combos.
+
+The search bar is auto-focused when the overlay opens, so typing works without holding Alt.
+
 **Sequence:**
-1. Press and hold **Alt**
-2. Press **Tab** once (overlay appears)
+1. Press and hold **Alt**, press **Tab** once (overlay appears)
+2. **Release Alt**
 3. Type **"fi"** (don't press Enter — just type the letters)
 4. Wait ~1 second (the 500ms debounce timer fires, then search executes)
 5. Observe the sphere
@@ -191,8 +195,8 @@ Q5: Did the satellite view update to show that app's icon and name?
 **Objective:** Verify Escape clears the search and restores the full sphere without closing.
 
 **Sequence:**
-1. Press and hold **Alt**
-2. Press **Tab** once
+1. Press and hold **Alt**, press **Tab** once
+2. **Release Alt**
 3. Type **"fi"**, wait ~1 second (sphere filters)
 4. Press **Escape** once
 5. Observe
@@ -229,10 +233,10 @@ Q2: Did the previously focused window stay focused?
 **Objective:** Verify Tab only cycles through filtered search results, not the full list.
 
 **Sequence:**
-1. Press and hold **Alt**
-2. Press **Tab** once
+1. Press and hold **Alt**, press **Tab** once
+2. **Release Alt**
 3. Type **"fi"**, wait ~1 second (sphere filters)
-4. Press **Tab** once — observe which app is highlighted
+4. Press and hold **Alt**, press **Tab** once — observe which app is highlighted
 5. Press **Tab** again — observe
 6. Press **Tab** until selection wraps around
 
@@ -251,10 +255,10 @@ Q4: How many unique apps did you cycle through? (should match the filtered count
 **Objective:** Verify releasing Alt while search is active activates the correct filtered app.
 
 **Sequence:**
-1. Press and hold **Alt**
-2. Press **Tab** once
+1. Press and hold **Alt**, press **Tab** once
+2. **Release Alt**
 3. Type **"fi"**, wait ~1 second
-4. Press **Tab** once or twice to pick a specific filtered app
+4. Press and hold **Alt**, press **Tab** once or twice to pick a specific filtered app
 5. Release **Alt**
 
 **Report:**
@@ -312,12 +316,12 @@ Q3: Did auto-rotation resume after releasing the mouse?
 **Objective:** Verify the combined flow of searching, clearing, searching again, and activating.
 
 **Sequence:**
-1. Press and hold **Alt**
-2. Press **Tab** once
+1. Press and hold **Alt**, press **Tab** once
+2. **Release Alt**
 3. Type **"fi"**, wait ~1 second → filtered results show
 4. Press **Escape** → search clears, full sphere restored
 5. Type **"th"**, wait ~1 second → filtered results for "th" show
-6. Release **Alt** (WITHOUT clearing search this time)
+6. Press and hold **Alt**, then release **Alt** to activate the selected app
 
 **Report:**
 ```

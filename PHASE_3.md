@@ -2,40 +2,148 @@
 
 **Goal:** Wire the QML overlay to the Guile daemon, implement the full Alt+Tab interaction loop with keyboard-driven cycling, integrate Fuse.js fuzzy search, and remove all legacy code. Everything works end-to-end.
 
-**Dependencies:** Phase 1 (config system), Phase 2 (Guile daemon), Fuse.js v7.0.0 (bundled at `lib/fuse.js`)
+**Dependencies:** Phase 1 (config system), Phase 2 (Guile daemon), Fuse.js v7.0.0 (bundled at `lib/fuse.js`), C compiler (for kbd-capture)
 
 ---
 
 ## 1. Architecture
 
 ```
-┌──────────────────────────────────────────────────────────────────────┐
-│ Hyprland                                                              │
-│  exec-once = guile daemon.scm                                        │
-│  bind = Alt+Tab, exec, toggle-launcher.sh                            │
-└──────────┬────────────────────────────────────────────────┬──────────┘
-           │ Alt+Tab pressed                               │ hyprctl dispatch
-           ▼                                                ▲ focuswindow
+┌─────────────────────────────────────────────────────────────────────────┐
+│ kbd-capture (C)                                                         │
+│  Reads raw keystrokes from /dev/input/event* via evdev                  │
+│  Detects ALL keys regardless of Hyprland binds                          │
+│  Outputs JSON lines to stdout: {"key":"tab","value":1,"mods":{"alt":true}} │
+└──────────────┬──────────────────────────────────────────────────────────┘
+               │ stdout pipe (JSON lines)
+               ▼
 ┌──────────────────────────┐   IPC (Unix socket)   ┌────────────────────┐
 │ polysphere.qml            │◄─────────────────────►│ daemon.scm          │
 │                           │   get_mru, get_app_db │                     │
 │  ┌───────────────────┐   │   activate, cancel    │  ┌───────────────┐  │
-│  │ Tab cycling       │   │   track_launch        │  │ MRU List      │  │
-│  │ (local via        │   │                       │  │ App Database  │  │
-│  │  appModel index)  │   │                       │  │ (desktop scan)│  │
-│  └───────────────────┘   │                       │  └───────────────┘  │
+│  │ kbd-capture       │   │   track_launch        │  │ MRU List      │  │
+│  │ Process stdin →   │   │                       │  │ App Database  │  │
+│  │ JSON event parser │   │                       │  │ (desktop scan)│  │
+│  └────────┬──────────┘   │                       │  └───────────────┘  │
+│           ▼              │                       │                     │
+│  ┌──────────────────┐    │                       │                     │
+│  │ Key State Machine│    │                       │                     │
+│  │  (replaces       │    │                       │                     │
+│  │   Keys.onPressed)│    │                       │                     │
+│  └──────────────────┘    │                       │                     │
 │                           │                       │                     │
 │  IpcHandler "polysphere"  │                       │                     │
-│    toggle(), reloadConfig │                       │                     │
+│    cycle, reloadConfig,   │                       │                     │
+│    toggle                 │                       │                     │
 └──────────────────────────┘                       └─────────────────────┘
          ▲
-         │ quickshell ipc call polysphere toggle
+         │ quickshell ipc call polysphere cycle (fallback only)
          ▼
 ┌──────────────────┐
-│ toggle-launcher.sh│
-│ IPC call to QML  │
+│ manual_start.sh   │
+│ launches daemon,  │
+│ quickshell, AND   │
+│ kbd-capture      │
 └──────────────────┘
 ```
+
+### Key Insight: Why kbd-capture?
+
+Hyprland intercepts Alt+letter key combinations (e.g., Alt+F for fullscreen, Alt+J/K for focus movement) **before QML's `Keys.onPressed` can see them**. This means:
+- The overlay can't detect letter keys typed while Alt is held (for search)
+- The overlay can't reliably detect Alt release (for activation)
+- The overlay can't detect Tab cycling when Alt is held (Hyprland bind fires instead)
+
+**kbd-capture solves this by reading keystrokes directly from the kernel's evdev layer**, bypassing the compositor entirely. It runs as a separate C process, reads `/dev/input/event*` devices, and streams JSON-encoded key events to QML via a stdout pipe.
+
+This completely replaces:
+- The Hyprland `ALT + Tab` bind (no Hyprland integration needed)
+- QML's `Keys.onPressed` / `Keys.onReleased` handlers
+- The `cycle()` IPC function for Tab cycling
+
+### Design Note: Local Tab Cycling vs Daemon `cycle_next`
+
+**Problem:** The daemon's internal MRU list only tracks apps that have been activated at least once (via `hyprctl` focus events). The `get_mru` response backfills non-running whitelisted apps to produce the full combined list shown on the sphere. But `cycle_next`/`cycle_prev` only iterate through daemon's **internal** list, which may be much smaller than what's visible.
+
+**Solution:** Tab/Shift+Tab cycling is handled **locally in QML** by advancing `selectedAppIndex` through `appModel` (the visible ListModel). This ensures:
+- ALL entries cycle through — running apps AND non-running launch targets
+- During search, only filtered results are cycled
+- No IPC round-trip needed for every Tab press
+
+---
+
+## 1b. kbd-capture Component (NEW)
+
+A small C program that captures raw keyboard events via evdev and streams them to QML.
+
+### Source: `lib/kbd-capture.c`
+
+### Behavior
+
+1. Opens the keyboard evdev device (auto-detected or user-specified)
+2. Enters a loop reading `struct input_event` (24 bytes each)
+3. Maintains a modifier state bitmask (Alt, Ctrl, Shift, Meta)
+4. On each key press/release, outputs a JSON line to stdout
+5. Flushes stdout after each event (important for pipe)
+
+### Output Format
+
+Each event is a single JSON line terminated by `\n`:
+
+```json
+{"key":"tab","value":1,"mods":{"alt":true,"ctrl":false,"shift":false}}
+{"key":"tab","value":0,"mods":{"alt":true}}
+{"key":"a","value":1,"mods":{"alt":true}}
+{"key":"alt","value":0,"mods":{}}
+{"key":"esc","value":1,"mods":{}}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `key` | string | Key name from `linux/input-event-codes.h` (lowercase, no KEY_ prefix) |
+| `value` | int | 1 = press, 0 = release, 2 = repeat |
+| `mods` | object | Current modifier states at time of event |
+
+### Device Auto-Detection
+
+Scan `/dev/input/by-path/` for entries matching `*kbd*`, `*keyboard*`, or `*event-kbd*`. Fall back to first non-mouse, non-touch device. User can override via config:
+
+```json
+"kbd": {
+  "device": "/dev/input/by-path/platform-i8042-serio-0-event-kbd"
+}
+```
+
+### Configurable Keybindings
+
+kbd-capture reads its keybinding configuration from the existing `keybindings` block in `polysphere.json` — no new config section needed:
+
+```json
+"keybindings": {
+  "toggle": "Alt+Tab",
+  "cancel": "Escape",
+  "cycleNext": "Tab",
+  "cyclePrevious": "Shift+Tab"
+}
+```
+
+kbd-capture receives these as command-line arguments and matches raw key events against them.
+
+| Key | Action when overlay hidden | Action when overlay visible |
+|---|---|---|
+| `toggle` (Alt+Tab) | Open overlay | Cycle forward (next app) |
+| `cycleNext` (Tab) | — | Cycle forward |
+| `cyclePrevious` (Shift+Tab) | — | Cycle backward |
+| `cancel` (Escape) | — | Clear search → close overlay |
+
+### Lifecycle
+
+kbd-capture is launched as a child `Process` of the QML overlay (`polysphere.qml`). QML manages its lifecycle:
+- Started when the overlay shell starts
+- Automatically restarted if it crashes
+- Terminated when the QML overlay exits
+
+This keeps `manual_start.sh` simple — no changes needed for kbd-capture.
 
 ### Design Note: Local Tab Cycling vs Daemon `cycle_next`
 
@@ -97,17 +205,19 @@ User releases Alt
 | File | Purpose |
 |---|---|
 | `lib/fuse.js` | Fuse.js v7.0.0 bundled for QML (68KB, `.pragma library`) |
-| `toggle-launcher.sh` | Quickshell IPC call to open overlay (replaces legacy stub) |
+| `lib/kbd-capture.c` | Raw evdev keyboard capture — reads /dev/input/event*, outputs JSON lines to stdout |
 
 ### Modified Files
 
 | File | Changes |
 |---|---|
-| **`polysphere.qml`** | Daemon IPC bridge, search system, Alt+Tab key handling, legacy code removal. Major rewrite. |
+| **`polysphere.qml`** | Add kbd-capture Process + JSON event handler. Replace `Keys.onPressed`/`Keys.onReleased` with kbd event stream. |
 | **`daemon.scm`** | ✅ **Already done** — `get_app_db`, `track_launch`, enriched MRU entries all implemented and tested |
-| **`polysphere.json`** | Add `search.delayMs` config key (default 500ms) |
+| **`polysphere.json`** | No new keys needed — uses existing `keybindings` block |
+| **`README.md`** | Add emphatic note about kbd-capture intercepting keybindings |
 | **`tests/test_daemon.sh`** | ✅ **Already done** — tests for `get_app_db` and `track_launch` added |
 | **`TESTS.md`** | Add PHASE_3_TESTING with manual procedures |
+| **`manual_start.sh`** | No changes — kbd-capture is launched by QML Process |
 
 ### Deleted References
 
@@ -382,55 +492,86 @@ function restoreFullSphere() {
 }
 ```
 
-### 4.4 Alt+Tab Key Handling
+### 4.4 Keyboard Handling (via kbd-capture)
+
+`Keys.onPressed`/`Keys.onReleased` are **replaced entirely** by the kbd-capture event stream. The QML overlay runs `kbd-capture` as a child `Process` and reads JSON key events from its stdout:
 
 ```qml
-Item {
-    id: window
-    focus: true
-    visible: false  // controlled by IpcHandler.toggle()
-    
-    property bool altHeld: false
-    property bool tabWasPressed: false
-    
-    Keys.priority: Keys.BeforeItem
-    Keys.onPressed: (event) => {
-        if (event.key === Qt.Key_Alt && !event.isAutoRepeat) {
-            altHeld = true;
-            event.accepted = true;
-        }
-        
-        // Tab/Shift+Tab cycles through the visible appModel, NOT the daemon's MRU.
-        // This ensures ALL entries (running + non-running whitelisted)
-        // are cycled through, not just the daemon's internal MRU list.
-        if ((event.key === Qt.Key_Tab || event.key === Qt.Key_Backtab) && (event.modifiers & Qt.AltModifier)) {
-            tabWasPressed = true;
-            if (appModel.count > 0) {
-                var dir = (event.key === Qt.Key_Tab) ? 1 : -1;
-                var nextIndex = (window.selectedAppIndex + dir + appModel.count) % appModel.count;
-                selectByIndex(nextIndex);
+// qml
+Process {
+    id: kbdProcess
+    command: ["kbd-capture", "--config", configPath]
+    running: true
+    stdout: StdioCollector {
+        onStreamFinished: {
+            // Process exited — restart after 1s
+            if (!kbdProcess.running) {
+                Qt.callLater(function() { kbdProcess.running = true; });
             }
-            event.accepted = true;
         }
-        
-        // Letter characters → search bar
-        if (!event.isAutoRepeat && event.text.length > 0 && event.text.match(/[a-zA-Z0-9]/)) {
-            searchInput.text += event.text;
-            searchInput.forceActiveFocus();
-            event.accepted = true;
+        onStreamLine: {
+            try {
+                var evt = JSON.parse(this.line);
+                handleKbdEvent(evt);
+            } catch(e) {
+                console.log("POLYSPHERE: kbd parse error", String(e));
+            }
         }
     }
+}
+
+function handleKbdEvent(evt) {
+    var alt = evt.mods && evt.mods.alt;
+    var shift = evt.mods && evt.mods.shift;
     
-    Keys.onReleased: (event) => {
-        if (event.key === Qt.Key_Alt) {
-            altHeld = false;
-            // Only activate if Tab was pressed during this Alt hold
-            if (tabWasPressed) {
-                triggerActivate();
-            }
-            event.accepted = true;
+    // --- Alt key tracking ---
+    if (evt.key === "alt_left" || evt.key === "alt_right") {
+        window.altHeld = (evt.value === 1);
+        if (!window.altHeld && window.tabWasPressed) {
+            // Alt released after Tab was pressed → activate
+            triggerActivate();
         }
+        return;
     }
+    
+    // --- Ignore key releases for action keys (press-only) ---
+    if (evt.value !== 1) return;
+    
+    // --- Escape ---
+    if (evt.key === "esc") {
+        handleEscape();
+        return;
+    }
+    
+    // --- Tab/Backtab (cycle) ---
+    if (evt.key === "tab") {
+        if (alt) {
+            window.tabWasPressed = true;
+            if (window.visible) {
+                cycleSelection(shift ? -1 : 1);
+            } else {
+                // First Alt+Tab: open overlay
+                window.altHeld = true;
+                if (window.panelWindow) window.panelWindow.visible = true;
+                window.visible = true;
+            }
+        }
+        return;
+    }
+    
+    // --- Letter/digit keys (search, only when Alt held) ---
+    if (alt && window.visible && evt.key.length === 1 && evt.key.match(/[a-zA-Z0-9]/)) {
+        searchInput.text += evt.key;
+        searchInput.forceActiveFocus();
+        return;
+    }
+    
+    // --- Backspace (search) ---
+    if (alt && window.visible && evt.key === "backspace") {
+        searchInput.text = searchInput.text.slice(0, -1);
+        return;
+    }
+}
     
     function triggerActivate() {
         var entry = getSelectedEntry();
@@ -1029,31 +1170,40 @@ Test runner: none — you perform these manually.
   - [x] Add `track_launch` request handler
   - [x] Enrich MRU entries with `name`, `icon`, `exec` from app database
   - [x] Update `--help` output with new request types
-- [ ] **QML changes:** (remaining work)
-  - [ ] Add Fuse.js import (`lib/fuse.js`)
-  - [ ] Add `search.delayMs` to `defaultConfig`
-  - [ ] Add state variables: `appDatabase`, `fuseIndex`, `currentMruList`, `daemonSocket`, etc.
-  - [ ] Add daemon IPC bridge — replace `appFetcher` with `daemonProcess` + `daemonRequest()`
-  - [ ] Add search system (Fuse index, debounce timer, executeSearch, restoreFullSphere)
-  - [ ] Add IpcHandler `toggle()` function
-  - [ ] Add overlay lifecycle (`openOverlay`, `closeOverlay`, `populateSphereFromMru`)
-  - [ ] Add Alt+Tab key handling (`Keys.onPressed`/`onReleased`, `updateSelection`, `triggerActivate`)
-  - [ ] Add tiered Escape handler (clear search → close overlay)
-  - [ ] Remove legacy code: `handleSearch()`, `launchApp()`, `paths.*` refs, `qs_manager.sh`, `Caching { id: paths }`
-  - [ ] Update `searchInput` TextField: wire to `handleSearchInput()`, remove old key handlers
-  - [ ] Update sphere delegate `MouseArea.onClicked` to use `triggerActivate()`-equivalent
-  - [ ] Remove `Caching.qml` from repo
+- [x] **Daemon changes:** ✅ **Complete**
+- [x] **Previous QML work:** ✅ **Complete**
+  - [x] Fuse.js import + search system
+  - [x] Daemon IPC bridge (`daemonProcess` + `daemonRequest()`)
+  - [x] Search system (Fuse index, debounce timer)
+  - [x] Overlay lifecycle (`openOverlay`, `closeOverlay`, `populateSphereFromMru`)
+  - [x] Tiered Escape handler
+  - [x] Legacy code removal
+  - [x] `Caching.qml` removed
+- [ ] **kbd-capture work:**
+  - [ ] Create `lib/kbd-capture.c` — evdev keyboard capture program
+  - [ ] Create `Makefile` (or build script) for kbd-capture
+  - [ ] Add kbd-capture `Process` to `polysphere.qml`
+  - [ ] Add `handleKbdEvent()` function to replace `Keys.onPressed`/`Keys.onReleased`
+  - [ ] Remove `Keys.onPressed`/`Keys.onReleased` from `polysphere.qml`
+  - [ ] Remove Hyprland `ALT + Tab` IPC bind dependency
+  - [ ] Remove `cycle()` IPC function (replaced by kbd-capture)
+  - [ ] Test: Alt+Tab opens overlay via kbd-capture
+  - [ ] Test: Tab cycles through apps via kbd-capture
+  - [ ] Test: Alt+letter typing for search
+  - [ ] Test: Alt release activates selected app
+  - [ ] Test: Escape closes overlay
 - [ ] **Config:**
-  - [ ] Add `search.delayMs` to `polysphere.json`
+  - [x] `search.delayMs` added to `polysphere.json`
+  - [ ] Verify kbd-capture reads `keybindings` from config
 - [ ] **Files:**
   - [x] `lib/fuse.js` — ✅ already created
-  - [ ] Create `toggle-launcher.sh`
+  - [ ] `lib/kbd-capture.c` — needs creation
 - [ ] **Testing:**
-  - [ ] Complete T1–T14 manual tests
+  - [ ] Complete T1–T14 manual tests (post-kbd-capture)
   - [ ] Update TESTS.md with PHASE_3_TESTING results
-  - [x] Daemon test suite — ✅ already updated for new request types
+  - [x] Daemon test suite — ✅ already updated
 - [ ] **Documentation:**
-  - [ ] Update README.md with search and IPC info
+  - [x] README.md updated with kbd-capture note
   - [ ] Update PLAN.md with final architecture
 
 ---

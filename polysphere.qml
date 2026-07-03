@@ -220,7 +220,6 @@ Item {
                 // First Alt+Tab: open overlay, start tracking Alt
                 window.altHeld = true;
                 window.tabWasPressed = true;
-                // Must make PanelWindow visible first so QML scene processes changes
                 if (window.panelWindow) {
                     window.panelWindow.visible = true;
                 }
@@ -741,12 +740,10 @@ Item {
             event.accepted = true;
         }
 
-        // Letter/digit keys — type into search bar
-        if (!event.isAutoRepeat && event.text.length > 0 && event.text.match(/[a-zA-Z0-9]/)) {
-            searchInput.text += event.text;
-            searchInput.forceActiveFocus();
-            event.accepted = true;
-        }
+        // Note: Letter/digit keys are intentionally NOT handled here.
+        // Hyprland intercepts Alt+<key> combinations before QML sees them.
+        // Instead, release Alt first, then type — the search bar is
+        // already focused (forceActiveFocus in openOverlay).
     }
 
     Keys.onReleased: (event) => {
