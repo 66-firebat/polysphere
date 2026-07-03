@@ -1,19 +1,17 @@
 #!/usr/bin/env bash
 # PolySphere Manual Test Launcher
 # Starts the daemon and Quickshell overlay for manual testing.
-# After running this script, open the overlay via:
-#   quickshell ipc -p /run/media/fireshark/FORGE_CELL/data/github_repositories/hypr-comp/shell.qml call polysphere toggle
+# After running this script, open the overlay by pressing Alt+Tab
+# (Hyprland enters the switcher submap, which routes to QML via IPC).
 #
-# Hyprland intercepts Alt+Tab before QML can see it, so cycling is done
-# via IPC. Use "cycle" for the Hyprland bind:
-#   hl.bind("ALT + Tab", function()
-#       hl.dispatch(hl.dsp.exec_cmd(
-#           "quickshell ipc -p /run/media/fireshark/FORGE_CELL/data/github_repositories/hypr-comp/shell.qml call polysphere cycle"
-#       ))
-#   end
+# The submap handles:
+#   Tab         → cycle forward
+#   Shift+Tab   → cycle backward
+#   Escape      → cancel (clear search → close)
+#   Alt release → activates selected app (falls through to QML Keys.onReleased)
 #
-# First press opens the overlay. Subsequent presses cycle forward.
-# Releasing Alt activates the selected app (Alt key reaches QML fine).
+# All global Alt+letter binds (Alt+F fullscreen, Alt+J/K focus, etc.)
+# are blocked while the submap is active.
 
 set -euo pipefail
 
@@ -62,11 +60,18 @@ sleep 2
 echo ""
 echo "═══ Ready for testing ═══"
 echo ""
-echo "To open/cycle the overlay, run in another terminal:"
-echo "  quickshell ipc -p /run/media/fireshark/FORGE_CELL/data/github_repositories/hypr-comp/shell.qml call polysphere cycle"
+echo "To open/cycle the overlay, press:  Alt+Tab"
+echo "  (Hyprland enters the switcher submap and routes to QML via IPC)"
 echo ""
-echo "To close it:"
-echo "  quickshell ipc -p /run/media/fireshark/FORGE_CELL/data/github_repositories/hypr-comp/shell.qml call polysphere toggle"
+echo "While overlay is open:"
+echo "  Tab        → cycle forward"
+echo "  Shift+Tab  → cycle backward"
+echo "  Escape     → cancel (clear search → close)"
+echo "  Alt+letter → types into search bar (blocked from global binds by submap)"
+echo "  Release Alt → activates selected app"
+echo ""
+echo "Manual IPC (if submap doesn't work):"
+echo "  quickshell ipc -p $REPO_DIR/shell.qml call polysphere toggle"
 echo ""
 echo "To close everything when done:"
 echo "  pkill -f quickshell; pkill -f guile.*daemon; rm -f $SOCKET"

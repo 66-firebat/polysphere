@@ -212,14 +212,17 @@ Item {
             }
         }
 
-        // Called by Hyprland's Alt+Tab bind (since Hyprland consumes the key event
-        // before QML's Keys.onPressed can see it).
+        // Called by Hyprland's Alt+Tab bind (or submap Tab handler).
         // First press opens overlay; subsequent presses cycle forward.
         function cycle(): void {
             if (!window.visible) {
                 // First Alt+Tab: open overlay, start tracking Alt
                 window.altHeld = true;
                 window.tabWasPressed = true;
+                // Enter Hyprland switcher submap so Tab/Shift+Tab/Escape are
+                // intercepted there (blocking global Alt+letter binds), and
+                // Alt release falls through to QML Keys.onReleased.
+                Quickshell.execDetached(["hyprctl", "dispatch", "submap", "switcher"]);
                 // Must make PanelWindow visible first so QML scene processes changes
                 if (window.panelWindow) {
                     window.panelWindow.visible = true;
@@ -233,6 +236,27 @@ Item {
                     window.selectByIndex(nextIndex);
                 }
             }
+        }
+
+        // Called by Hyprland submap Shift+Tab bind.
+        // Cycles backward through the visible appModel.
+        function cycleBackward(): void {
+            window.tabWasPressed = true;
+            if (appModel.count > 0) {
+                var prevIndex = (window.selectedAppIndex - 1 + appModel.count) % appModel.count;
+                window.selectByIndex(prevIndex);
+            }
+        }
+
+        // Called by Hyprland submap Escape bind.
+        // Clears search text first, or closes overlay if search is already empty.
+        function cancel(): void {
+            window.handleEscape();
+        }
+
+        // Activates the currently selected app (focus if running, launch if not).
+        function commit(): void {
+            window.triggerActivate();
         }
     }
 
@@ -694,6 +718,9 @@ Item {
             if (window.panelWindow) {
                 window.panelWindow.visible = false;
             }
+            // Exit the Hyprland switcher submap (safety net — QML handles
+            // activation, submap just needs to be cleaned up)
+            Quickshell.execDetached(["hyprctl", "dispatch", "submap", "reset"]);
         } }
     }
 

@@ -7,6 +7,7 @@ import Quickshell.Wayland
 // (Escape, Alt release) still reach the QML engine.
 PanelWindow {
     id: root
+    visible: false  // hidden until polysphere.qml opens it via panelWindow reference
 
     WlrLayershell.namespace: "polysphere"
     WlrLayershell.layer: WlrLayer.Overlay
