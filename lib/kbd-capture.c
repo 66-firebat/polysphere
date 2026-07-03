@@ -627,6 +627,8 @@ disconnect:
                 }
                 close(conn_fd);
                 conn_fd = -1;
+                cmd_pos = 0;
+                memset(cmd_buf, 0, sizeof(cmd_buf));
             } else if (r == 1) {
                 if (ch == '\n') {
                     cmd_buf[cmd_pos] = '\0';

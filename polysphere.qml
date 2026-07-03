@@ -320,14 +320,9 @@ Item {
             onConnectedChanged: {
                 window.kbdLog("SOCKET connected=" + connected);
                 if (connected) {
-                    // Debounce: only grab if not already grabbed recently
-                    var now = Date.now();
-                    if (!window._lastGrabTime || now - window._lastGrabTime > 500) {
-                        window._lastGrabTime = now;
-                        this.write("grab\n");
-                        this.flush();
-                        window.kbdLog("SOCKET sent grab");
-                    }
+                    this.write("grab\n");
+                    this.flush();
+                    window.kbdLog("SOCKET sent grab");
                 }
             }
             parser: SplitParser {
@@ -354,8 +349,9 @@ Item {
         // --- Alt key tracking ---
         if (evt.key === "alt_left" || evt.key === "alt_right") {
             window.altHeld = (evt.value === 1);
-            if (!window.altHeld && window.tabWasPressed) {
-                // Alt released after Tab was pressed → activate
+            // Only activate if overlay is still visible — prevents phantom
+            // activation after close (e.g., Escape + Alt release)
+            if (!window.altHeld && window.tabWasPressed && window.visible) {
                 triggerActivate();
             }
             return;
