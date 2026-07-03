@@ -827,12 +827,16 @@ Item {
     Keys.onPressed: (event) => {
         // Alt pressed — start tracking
         if (event.key === Qt.Key_Alt && !event.isAutoRepeat) {
+            debugLog("KEY", "Alt pressed (QML)");
             altHeld = true;
             event.accepted = true;
         }
 
-        // Tab/Shift+Tab with Alt — cycle through visible appModel (not daemon MRU)
+        // Tab/Shift+Tab with Alt — cycle through visible appModel
+        // Note: when submap is active, Tab is handled there and consumed,
+        // so this handler only fires for Tab without submap active.
         if ((event.key === Qt.Key_Tab || event.key === Qt.Key_Backtab) && (event.modifiers & Qt.AltModifier)) {
+            debugLog("KEY", "Tab+Alt pressed (QML, submap not active or key fell through)");
             tabWasPressed = true;
             if (appModel.count > 0) {
                 var dir = (event.key === Qt.Key_Tab) ? 1 : -1;
@@ -843,12 +847,15 @@ Item {
 
         // Escape — tiered handler: clear search first, then close
         if (event.key === Qt.Key_Escape) {
+            debugLog("KEY", "Escape pressed (QML)");
             handleEscape();
             event.accepted = true;
         }
 
         // Letter/digit keys — type into search bar
+        // These pass through the submap (unhandled) and reach QML for search.
         if (!event.isAutoRepeat && event.text.length > 0 && event.text.match(/[a-zA-Z0-9]/)) {
+            debugLog("KEY", "Letter typed in search: '" + event.text + "'");
             searchInput.text += event.text;
             searchInput.forceActiveFocus();
             event.accepted = true;
@@ -857,7 +864,14 @@ Item {
 
     Keys.onReleased: (event) => {
         // Alt released — activate the selected app if Tab was pressed
+        // This fires when Alt release passes through the submap (Option B:
+        // submap does NOT handle Alt release, so it falls through to QML).
         if (event.key === Qt.Key_Alt) {
+            debugLog("KEY", "Alt released (from QML Keys.onReleased)", {
+                altHeld: altHeld,
+                tabWasPressed: tabWasPressed,
+                visible: window.visible
+            });
             altHeld = false;
             if (tabWasPressed) {
                 triggerActivate();
