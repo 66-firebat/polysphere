@@ -273,7 +273,9 @@ Item {
         }
 
         // Called by Hyprland's Alt+Tab bind (or submap Tab handler).
-        // Submap enter/exit is handled entirely by keymaps.lua.
+        // Submap enter/exit is handled entirely by Hyprland's keymaps.lua
+        // (synchronous hl.dispatch, NOT execDetached) to avoid race conditions
+        // where execDetached gets queued when the PanelWindow goes invisible.
         // First press opens overlay; subsequent presses cycle forward.
         function cycle(): void {
             debugLog("CYCLE", "cycle() called, visible=" + window.visible +
@@ -282,7 +284,12 @@ Item {
                 // First Alt+Tab: open overlay, start tracking Alt
                 window.altHeld = true;
                 window.tabWasPressed = true;
-                // Submap entry is done by Hyprland's ALT+Tab bind handler.
+                // Clear any stale submap before opening. This is a proactive
+                // cleanup in case a previous close path didn't properly reset.
+                debugLog("SUBMAP", "Clearing stale submap before open (cycle)");
+                Quickshell.execDetached(["hyprctl", "dispatch", "submap", "reset"]);
+                // Submap entry is done by Hyprland's ALT+Tab bind handler,
+                // NOT by execDetached here. See keymaps.lua for the submap enter.
                 // Must make PanelWindow visible first so QML scene processes changes
                 if (window.panelWindow) {
                     window.panelWindow.visible = true;
@@ -785,6 +792,11 @@ Item {
         id: closeSequence
         NumberAnimation { target: window; property: "introPhase"; to: 0.0; duration: window.animExitFade; easing.type: Easing.OutQuint }
         ScriptAction { script: { 
+            // For the non-running path: track_launch also resets submap in
+            // the daemon. For Escape/toggle paths without daemon involvement:
+            // reset submap as a safety net while engine is still active.
+            debugLog("SUBMAP", "Resetting submap (closeSequence safety net)");
+            Quickshell.execDetached(["hyprctl", "dispatch", "submap", "reset"]);
             window.visible = false;
             if (window.panelWindow) {
                 window.panelWindow.visible = false;
@@ -920,8 +932,13 @@ Item {
                  " running=" + entry.running + " exec=" + (entry.exec || ""));
 
         if (entry.running) {
+            // Send activate to daemon, which also resets the submap as a side
+            // effect (daemon.scm handle-activate does hyprctl dispatch submap
+            // reset). The daemon is a persistent independent process, so this
+            // is always reliable unlike QML execDetached.
             var cmd = "echo '" + JSON.stringify({type: "activate", app: entry.id}).replace(/'/g, "'\\''") + "' | nc -U " + daemonSocket;
             Quickshell.execDetached(["bash", "-c", cmd]);
+            debugLog("SUBMAP", "Submap reset delegated to daemon (handle-activate)");
             // Then hide overlay (no animation, immediate)
             window.visible = false;
             if (window.panelWindow) {
