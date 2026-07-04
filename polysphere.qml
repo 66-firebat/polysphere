@@ -314,8 +314,10 @@ Item {
 
         // Called by Hyprland submap Escape bind.
         // Clears search text first, or closes overlay if search is already empty.
+        // Sets escapeGuard to prevent Alt release from triggering activate.
         function cancel(): void {
             debugLog("IPC", "cancel() called, searchLen=" + searchInput.text.length);
+            window._escapeGuard = true;
             window.handleEscape();
         }
 
@@ -813,6 +815,7 @@ Item {
     // Reference to the shell PanelWindow, set by shell.qml after loading.
     // Used to directly control visibility for click-through when closed.
     property var panelWindow: null
+    property bool _escapeGuard: false  // Prevents Alt release trigger after Escape
 
     ListModel { id: appModel }
 
@@ -864,18 +867,15 @@ Item {
 
     Keys.onReleased: (event) => {
         // Alt released — activate the selected app if Tab was pressed
-        // This fires when Alt release passes through the submap (Option B:
-        // submap does NOT handle Alt release, so it falls through to QML).
+        // This fires when Alt release passes through the submap.
         if (event.key === Qt.Key_Alt) {
-            debugLog("KEY", "Alt released (from QML Keys.onReleased)", {
-                altHeld: altHeld,
-                tabWasPressed: tabWasPressed,
-                visible: window.visible
-            });
+            debugLog("KEY", "Alt released (from QML Keys.onReleased)");
             altHeld = false;
-            if (tabWasPressed) {
+            if (tabWasPressed && !window._escapeGuard) {
                 triggerActivate();
             }
+            window._escapeGuard = false;
+            tabWasPressed = false;
             event.accepted = true;
         }
     }
@@ -931,21 +931,15 @@ Item {
 
         if (entry.running) {
             // Use execDetached so the command runs INDEPENDENTLY of QML visibility.
-            // daemonProcess wouldn't work here because its parent is about to be hidden.
             var cmd = "echo '" + JSON.stringify({type: "activate", app: entry.id}).replace(/'/g, "'\\''") + "' | nc -U " + daemonSocket;
             Quickshell.execDetached(["bash", "-c", cmd]);
+            // Reset submap BEFORE hiding overlay
+            Quickshell.execDetached(["hyprctl", "dispatch", "submap", "reset"]);
             // Then hide overlay (no animation, immediate)
             window.visible = false;
             if (window.panelWindow) {
                 window.panelWindow.visible = false;
             }
-            // Safety net: reset submap via execDetached. The primary reset
-            // is done by keymaps.lua's Alt release handler (synchronous
-            // hl.dispatch BEFORE the commit IPC), but this execDetached is
-            // belt-and-suspenders in case the Hyprland-side reset has a race.
-            debugLog("SUBMAP", "Safety net: dispatching submap reset via execDetached");
-            Quickshell.execDetached(["hyprctl", "dispatch", "submap", "reset"]);
-            debugState("after-activate-running");
         } else {
             Quickshell.execDetached(["bash", "-c", entry.exec || entry.id]);
             debugLog("DAEMON", "track_launch for " + entry.id);
